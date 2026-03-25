@@ -1,0 +1,45 @@
+version: "3.9"
+
+# ---------------------------------------------------------------------------
+# Android override — adds docker-android as a sidecar to the core sandbox.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.android.yml up
+#
+# The android container exposes:
+#   5555  — ADB over TCP (connect with: adb connect localhost:5555)
+#   6081  — noVNC for the Android screen (different from core's 6080)
+# ---------------------------------------------------------------------------
+
+services:
+  android:
+    image: budtmo/docker-android:emulator_13.0
+    container_name: agent-android
+    privileged: true
+    ports:
+      - "${ANDROID_ADB_PORT:-5555}:5555"    # ADB over TCP
+      - "${ANDROID_NOVNC_PORT:-6081}:6080"  # Android noVNC (mapped to 6081 on host)
+    environment:
+      - EMULATOR_DEVICE=${ANDROID_DEVICE:-Samsung Galaxy S10}
+      - WEB_VNC=true
+      - APPIUM=false
+    volumes:
+      - android-data:/root
+    restart: unless-stopped
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD-SHELL", "adb devices | grep -q emulator || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  android-data:
+    name: agent-android-data
+
+networks:
+  default:
+    name: agent-sandbox-net
+    external: true

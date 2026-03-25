@@ -1,0 +1,34 @@
+version: "3.9"
+
+# ---------------------------------------------------------------------------
+# Standalone Android module compose file.
+# Use this when running Android independently of the core sandbox.
+#
+# Usage:
+#   cd modules/android && docker compose up
+# ---------------------------------------------------------------------------
+
+services:
+  android:
+    image: budtmo/docker-android:emulator_13.0
+    container_name: agent-android-standalone
+    privileged: true
+    ports:
+      - "${ANDROID_ADB_PORT:-5555}:5555"    # ADB over TCP
+      - "${ANDROID_NOVNC_PORT:-6081}:6080"  # Android noVNC
+    environment:
+      - EMULATOR_DEVICE=${ANDROID_DEVICE:-Samsung Galaxy S10}
+      - WEB_VNC=true
+      - APPIUM=false
+    volumes:
+      - android-standalone-data:/root
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "adb devices | grep -q emulator || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  android-standalone-data:
