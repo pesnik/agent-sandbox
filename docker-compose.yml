@@ -20,6 +20,8 @@ services:
       - "${NGINX_PORT:-8080}:8080"   # nginx dashboard
       - "${VNC_PORT:-5900}:5900"     # VNC direct
       - "${NOVNC_PORT:-6080}:6080"   # noVNC WebSocket
+      - "${MCP_PORT:-8079}:8079"     # MCP server
+      - "${API_PORT:-8091}:8091"     # REST API v1
     environment:
       - VNC_PASSWORD=${VNC_PASSWORD:-sandbox}
       - DISPLAY=:1
