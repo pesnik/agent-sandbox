@@ -20,8 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xfce4-terminal \
     xfce4-session \
     dbus-x11 \
-    # noVNC / websockify
-    novnc \
+    # websockify (noVNC 1.4 downloaded separately — apt ships broken 1.0)
     websockify \
     # Web server
     nginx \
@@ -47,8 +46,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# noVNC is installed at /usr/share/novnc — symlink a predictable path
-RUN ln -sf /usr/share/novnc /opt/novnc
+# noVNC 1.4.0 — download directly (apt ships broken 1.0.0 on Ubuntu 22.04)
+RUN wget -qO /tmp/novnc.tar.gz \
+      https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz && \
+    tar -xzf /tmp/novnc.tar.gz -C /opt && \
+    mv /opt/noVNC-1.4.0 /opt/novnc && \
+    ln -sf /opt/novnc/vnc.html /opt/novnc/index.html && \
+    rm /tmp/novnc.tar.gz
 
 # xdotool for X input automation
 RUN apt-get update && apt-get install -y --no-install-recommends \
