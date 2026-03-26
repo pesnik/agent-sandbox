@@ -50,10 +50,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # noVNC is installed at /usr/share/novnc — symlink a predictable path
 RUN ln -sf /usr/share/novnc /opt/novnc
 
-# Chromium for browser module
+# xdotool for X input automation
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    chromium-browser \
-    chromium-chromedriver \
     xdotool \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -64,6 +62,16 @@ RUN curl -fsSL https://code-server.dev/install.sh | sh
 COPY api/requirements.txt /tmp/api-requirements.txt
 COPY mcp_server/requirements.txt /tmp/mcp-requirements.txt
 RUN pip3 install --no-cache-dir -r /tmp/api-requirements.txt -r /tmp/mcp-requirements.txt
+
+# Playwright Chromium — real arm64 binary, installed outside /root so the
+# volume mount on /root at runtime does not hide the binary.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+RUN pip3 install --no-cache-dir playwright && \
+    playwright install chromium && \
+    playwright install-deps chromium
+
+# Write Chromium path to a known location so supervisord can reference it
+RUN python3 -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); open('/opt/chromium-path','w').write(p.chromium.executable_path); p.stop()" && echo "Chromium at: $(cat /opt/chromium-path)"
 
 # Create required directories
 RUN mkdir -p \
@@ -81,7 +89,8 @@ COPY supervisord/conf.d/novnc.conf /etc/supervisor/conf.d/novnc.conf
 COPY supervisord/conf.d/nginx.conf /etc/supervisor/conf.d/nginx.conf
 COPY supervisord/conf.d/api.conf    /etc/supervisor/conf.d/api.conf
 COPY supervisord/conf.d/mcp.conf   /etc/supervisor/conf.d/mcp.conf
-COPY supervisord/conf.d/vscode.conf /etc/supervisor/conf.d/vscode.conf
+COPY supervisord/conf.d/vscode.conf   /etc/supervisor/conf.d/vscode.conf
+COPY supervisord/conf.d/chromium.conf /etc/supervisor/conf.d/chromium.conf
 
 # Copy nginx configuration
 COPY nginx/nginx.conf       /etc/nginx/nginx.conf

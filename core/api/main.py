@@ -124,23 +124,29 @@ async def shell_execute(req: ShellExecuteRequest) -> dict[str, Any]:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=req.timeout
             )
+            return {
+                "stdout": stdout.decode(errors="replace"),
+                "stderr": stderr.decode(errors="replace"),
+                "exit_code": proc.returncode,
+                "timed_out": False,
+            }
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            raise HTTPException(
-                status_code=408,
-                detail=f"Command timed out after {req.timeout}s",
-            )
-    except HTTPException:
-        raise
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(proc.communicate(), timeout=3.0)
+            except asyncio.TimeoutError:
+                pass
+            return {
+                "stdout": "",
+                "stderr": f"Command timed out after {req.timeout}s",
+                "exit_code": -1,
+                "timed_out": True,
+            }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    return {
-        "stdout": stdout.decode(errors="replace"),
-        "stderr": stderr.decode(errors="replace"),
-        "exit_code": proc.returncode,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -166,8 +172,11 @@ async def files_read(path: str = Query(..., description="Absolute path to file")
 
 @app.post("/v1/files/write")
 async def files_write(req: FileWriteRequest) -> dict[str, Any]:
-    """Write content to a file, creating it if necessary."""
+    """Write content to a file, creating intermediate directories if needed."""
     try:
+        parent = os.path.dirname(req.path)
+        if parent:
+            await aiofiles.os.makedirs(parent, exist_ok=True)
         async with aiofiles.open(req.path, "w") as f:
             await f.write(req.content)
         byte_count = len(req.content.encode())
