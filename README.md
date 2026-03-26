@@ -1,8 +1,6 @@
 # Agent Sandbox
 
-A composable, self-hosted Docker environment where an AI agent can control a full desktop, browser, Android emulator, VS Code, and more — all via MCP tools.
-
-Each capability lives in its own **module**. Modules are opt-in: enable only what you need, restart the container, and the service appears.
+A composable, self-hosted Docker environment where an AI agent can control a full desktop, browser, VS Code, and more — all via REST API and MCP tools. Drop-in replacement for `agent-infra/sandbox`.
 
 ---
 
@@ -13,22 +11,24 @@ Each capability lives in its own **module**. Modules are opt-in: enable only wha
 │  Host machine                                               │
 │                                                             │
 │  ┌───────────────────────────────────────────────────────┐  │
-│  │  agent-sandbox (Docker container)                     │  │
+│  │  agent-sandbox (single Docker container)              │  │
 │  │                                                       │  │
-│  │   nginx :8080  ──┬── /vnc/    → noVNC :6080           │  │
-│  │   (dashboard)    ├── /vscode/ → code-server :8200     │  │
-│  │                  └── /api/    → sandbox API :8091     │  │
+│  │   nginx :8080  ──┬── /vnc/      → noVNC      :6080   │  │
+│  │   (dashboard)    ├── /vscode/   → code-server :8200  │  │
+│  │                  ├── /v1/       → REST API    :8091  │  │
+│  │                  ├── /mcp/      → MCP server  :8079  │  │
+│  │                  ├── /cdp/      → Chromium CDP :9222 │  │
+│  │                  └── /devtools/ → Chromium CDP :9222 │  │
 │  │                                                       │  │
-│  │   supervisord                                         │  │
-│  │     ├── tigervncserver :5900  (XFCE4 desktop)         │  │
-│  │     ├── websockify     :6080  (noVNC bridge)          │  │
-│  │     ├── nginx          :8080                          │  │
-│  │     │                                                 │  │
-│  │     │   [enabled modules]                             │  │
-│  │     ├── chromium       :9222  (CDP remote debug)      │  │
-│  │     ├── code-server    :8200                          │  │
-│  │     ├── teams (PWA in chromium)                       │  │
-│  │     └── uvicorn        :8100  (SMS webhook)           │  │
+│  │   supervisord (always-on core services)               │  │
+│  │     ├── xtigervnc    :5900  (XFCE4 desktop)          │  │
+│  │     ├── xfce                (desktop session)        │  │
+│  │     ├── websockify   :6080  (noVNC WebSocket bridge) │  │
+│  │     ├── nginx        :8080  (reverse proxy)          │  │
+│  │     ├── chromium     :9222  (CDP remote debug)       │  │
+│  │     ├── code-server  :8200  (VS Code in browser)     │  │
+│  │     ├── uvicorn      :8091  (REST API v1)            │  │
+│  │     └── mcp-server   :8079  (MCP SSE server)        │  │
 │  └───────────────────────────────────────────────────────┘  │
 │                                                             │
 │  ┌───────────────────────────────────────────────────────┐  │
@@ -36,181 +36,215 @@ Each capability lives in its own **module**. Modules are opt-in: enable only wha
 │  │   budtmo/docker-android:emulator_13.0                 │  │
 │  │   ADB :5555 | noVNC :6081                             │  │
 │  └───────────────────────────────────────────────────────┘  │
-│                                                             │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │  MCP tools (run on host or in container)              │  │
-│  │   mcp/tools/browser.py  → CDP → chromium :9222        │  │
-│  │   mcp/tools/android.py  → ADB → android  :5555        │  │
-│  └───────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+All core services start automatically — no modules to enable for the base stack.
 
 ---
 
 ## Port map
 
-| Port | Service | Description |
-|------|---------|-------------|
-| 8080 | nginx | Dashboard + reverse proxy |
-| 5900 | TigerVNC | Direct VNC access |
-| 6080 | noVNC | Browser-based desktop (also at `/vnc/`) |
-| 8200 | code-server | VS Code in browser (module: vscode) |
-| 8100 | SMS webhook | FastAPI: SMS → Claude → WhatsApp (module: sms) |
-| 9222 | Chromium CDP | Remote debugging / MCP browser tool (module: browser) |
-| 5555 | ADB | Android device control (module: android) |
-| 6081 | Android noVNC | Android screen in browser (module: android) |
+| Port | Path | Service | Notes |
+|------|------|---------|-------|
+| 8080 | `/` | nginx dashboard | Links to all services |
+| 8080 | `/vnc/` | noVNC | Browser-based XFCE4 desktop |
+| 8080 | `/vscode/` | VS Code Server | No auth required |
+| 8080 | `/v1/` | REST API | Shell, files, browser control |
+| 8080 | `/v1/docs` | OpenAPI docs | Interactive Swagger UI |
+| 8080 | `/mcp/sse` | MCP server | SSE transport for AI agents |
+| 8080 | `/cdp/` | CDP proxy | Chromium DevTools Protocol |
+| 5900 | — | TigerVNC | Direct VNC access |
+| 6080 | — | noVNC | WebSocket desktop stream |
+| 8079 | — | MCP server | Direct (also proxied at `/mcp/`) |
+| 8091 | — | REST API | Direct (also proxied at `/v1/`) |
+| 9222 | — | Chromium CDP | Direct (also proxied at `/cdp/`) |
+| 5555 | — | ADB | Android sidecar only |
+| 6081 | — | Android noVNC | Android sidecar only |
 
 ---
 
 ## Quick start
 
-### 1. Clone and configure
-
 ```bash
-git clone <this-repo> agent-sandbox
+git clone https://github.com/pesnik/agent-sandbox
 cd agent-sandbox
-cp .env.example .env
-# Edit .env — at minimum set ANTHROPIC_API_KEY if using the sms module
-```
-
-### 2. Enable the modules you want
-
-```bash
-# Enable browser automation and VS Code
-./scripts/enable-module.sh browser vscode
-
-# Enable SMS forwarding
-./scripts/enable-module.sh sms
-
-# Or enable everything at once
-./scripts/enable-module.sh browser vscode teams sms
-```
-
-### 3. Start the core sandbox
-
-```bash
 docker compose up -d --build
 ```
 
-Open **http://localhost:8080** for the dashboard.
+Open **http://localhost:8080** — the dashboard links to all services.
 
-### 4. (Optional) Start the Android sidecar
+No configuration required for the core stack. All services start automatically.
+
+---
+
+## REST API v1
+
+The sandbox exposes a FastAPI service at `/v1/` (port 8091 direct, or `http://localhost:8080/v1/`).
+
+Interactive docs: **http://localhost:8080/v1/docs**
+
+### Shell
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.android.yml up -d
+# Run a command
+curl -X POST http://localhost:8080/v1/shell/run \
+  -H 'Content-Type: application/json' \
+  -d '{"command": "ls /root", "timeout": 10}'
+
+# Response
+{"stdout": "...", "stderr": "", "exit_code": 0, "timed_out": false}
 ```
 
-Then install android-sms-gateway on the emulator:
+### Files
 
 ```bash
-WEBHOOK_URL=http://host.docker.internal:8100/sms \
-  ./modules/android/install.sh
+# Read a file
+curl http://localhost:8080/v1/files/read?path=/etc/hostname
+
+# Write a file
+curl -X POST http://localhost:8080/v1/files/write \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "/root/hello.txt", "content": "hello world"}'
+```
+
+### Browser (CDP)
+
+```bash
+# Navigate to a URL
+curl -X POST http://localhost:8080/v1/browser/navigate \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://example.com"}'
+
+# Take a screenshot (returns base64 PNG)
+curl http://localhost:8080/v1/browser/screenshot
 ```
 
 ---
 
-## Module reference
+## MCP server
 
-### `browser` — Chromium with CDP
+The sandbox runs a Model Context Protocol server at `/mcp/sse` (SSE transport).
 
-Starts Chromium in the desktop session with `--remote-debugging-port=9222`.
-Use `mcp/tools/browser.py` to control it from an AI agent.
+Connect from Claude Desktop or any MCP client:
 
-Enable: `./scripts/enable-module.sh browser`
-
-### `vscode` — VS Code Server
-
-Runs [code-server](https://github.com/coder/code-server) on port 8200.
-Access via `http://localhost:8080/vscode/` or directly on port 8200.
-No password (intended for local/trusted use only).
-
-Enable: `./scripts/enable-module.sh vscode`
-
-### `teams` — Microsoft Teams PWA
-
-Opens `https://teams.microsoft.com` as a Chromium app with its own profile.
-Appears in the noVNC desktop. Sign in once; the profile persists in the
-`sandbox-home` Docker volume.
-
-Enable: `./scripts/enable-module.sh teams`
-
-### `sms` — SMS → Claude → WhatsApp bridge
-
-FastAPI service on port 8100. Receives POST requests from android-sms-gateway,
-forwards them to Claude (claude-sonnet-4-6), and sends the reply to a WhatsApp
-recipient.
-
-**Required env vars:** `ANTHROPIC_API_KEY`, `WHATSAPP_RECIPIENT`
-
-Enable: `./scripts/enable-module.sh sms`
-
-### `android` — Android 13 emulator
-
-Runs `budtmo/docker-android:emulator_13.0` as a Docker sidecar.
-Exposes ADB on port 5555 and a noVNC view on port 6081.
-
-Start:
-```bash
-docker compose -f docker-compose.yml -f docker-compose.android.yml up -d
+```json
+{
+  "mcpServers": {
+    "agent-sandbox": {
+      "url": "http://localhost:8080/mcp/sse"
+    }
+  }
+}
 ```
+
+Available tools: `shell_run`, `file_read`, `file_write`, `browser_navigate`, `browser_screenshot`, `browser_click`, `browser_type`, `browser_scroll`, `browser_evaluate`, `browser_wait`, `browser_get_url`, `browser_get_content`
 
 ---
 
-## MCP tools (AI agent control)
+## Playwright / CDP access
 
-The `mcp/tools/` directory contains Python scripts the agent calls to control
-the sandbox. See [mcp/README.md](mcp/README.md) for full documentation.
+Chromium runs with `--remote-debugging-port=9222` and is proxied through nginx at `/cdp/`.
 
-| Tool file | Controls | Transport |
-|-----------|---------|-----------|
-| `browser.py` | Chromium via CDP | Direct async / TCP server |
-| `android.py` | Android via ADB | Direct async / TCP server |
-
-Quick example — take a screenshot of the browser:
+### From outside the container
 
 ```python
-import asyncio
-from mcp.tools.browser import screenshot
+from playwright.async_api import async_playwright
+import urllib.request, json, urllib.parse
 
-result = asyncio.run(screenshot())
-# result["data"] is a base64-encoded PNG
+# Fetch the WebSocket URL and rewrite the host:port
+cdp_url = "http://localhost:8080/cdp"
+data = json.loads(urllib.request.urlopen(cdp_url + "/json/version").read())
+ws_url = data["webSocketDebuggerUrl"]          # ws://localhost:9222/devtools/browser/UUID
+parsed = urllib.parse.urlparse(ws_url)
+ws_url = ws_url.replace(f"{parsed.hostname}:{parsed.port}", "localhost:8080")
+# → ws://localhost:8080/devtools/browser/UUID
+
+async with async_playwright() as p:
+    browser = await p.chromium.connect_over_cdp(ws_url)
+    page = browser.contexts[0].pages[0]
+    await page.goto("https://example.com")
+```
+
+### Using the autumn-sandbox shim
+
+If you're using `autumn-sandbox`, the `agent_sandbox` Python shim handles URL rewriting automatically:
+
+```python
+from agent_sandbox import Sandbox
+
+client = Sandbox()  # reads SANDBOX_CDP_URL from env
+ws_url = client.browser.get_info().data.cdp_url  # ready for Playwright
+```
+
+Set in `.env`:
+```
+SANDBOX_CDP_URL=http://localhost:8080/cdp
+SANDBOX_BASE_URL=http://localhost:8091
 ```
 
 ---
 
-## Adding a new module
+## Stealth / bot detection
 
-1. Create `modules/<name>/supervisord.conf` with a `[program:<name>]` block.
-2. Optionally add a `modules/<name>/README.md`.
-3. Enable it: `./scripts/enable-module.sh <name>`
-4. Restart: `docker compose restart sandbox`
+Chromium launches with a stealth Chrome extension (`core/stealth-extension/`) that:
 
-The supervisord conf is copied into `/etc/supervisor/conf.d/` on container start.
-Any program defined there will be managed alongside the core services.
+- Removes `navigator.webdriver` and CDP automation globals
+- Spoofs `navigator.plugins`, `navigator.mimeTypes`, `navigator.languages`
+- Fixes `Permissions.query` to return `granted` for notifications
+- Runs at `document_start` in the `MAIN` world — executes before any page script
 
-If your module needs its own sidecar container, add a
-`modules/<name>/docker-compose.yml` and a top-level `docker-compose.<name>.yml`
-override following the android pattern.
+This makes the browser undetectable by standard bot checks (reCAPTCHA, Cloudflare, etc.).
 
 ---
 
-## Disabling a module
+## Android sidecar (optional)
 
 ```bash
-./scripts/disable-module.sh browser
-docker compose restart sandbox
+docker compose -f docker-compose.yml -f docker-compose.android.yml up -d
 ```
+
+- Android 13 emulator via `budtmo/docker-android:emulator_13.0`
+- ADB on port 5555, noVNC desktop on port 6081
+- No kernel modules or `--privileged` required
 
 ---
 
-## Building the core image
+## Adding a module
 
-```bash
-docker compose build sandbox
+Add a `[program:<name>]` block to a new file under `core/supervisord/conf.d/`:
+
+```ini
+[program:myservice]
+command=/usr/local/bin/myservice --port=8300
+autostart=true
+autorestart=true
+priority=60
+user=root
+stdout_logfile=/var/log/supervisor/myservice.log
+stderr_logfile=/var/log/supervisor/myservice-err.log
 ```
 
-Or to force a clean rebuild:
+Rebuild and restart:
 
 ```bash
 docker compose build --no-cache sandbox
+docker compose up -d
+```
+
+For a sidecar container, add a `docker-compose.override.yml` following the android pattern.
+
+---
+
+## Building
+
+```bash
+# Build the core image
+docker compose build sandbox
+
+# Force clean rebuild
+docker compose build --no-cache sandbox
+
+# Run e2e tests (container must be up)
+python tests/e2e.py
 ```
