@@ -79,8 +79,9 @@ COPY supervisord/supervisord.conf /etc/supervisor/supervisord.conf
 COPY supervisord/conf.d/vnc.conf   /etc/supervisor/conf.d/vnc.conf
 COPY supervisord/conf.d/novnc.conf /etc/supervisor/conf.d/novnc.conf
 COPY supervisord/conf.d/nginx.conf /etc/supervisor/conf.d/nginx.conf
-COPY supervisord/conf.d/api.conf   /etc/supervisor/conf.d/api.conf
+COPY supervisord/conf.d/api.conf    /etc/supervisor/conf.d/api.conf
 COPY supervisord/conf.d/mcp.conf   /etc/supervisor/conf.d/mcp.conf
+COPY supervisord/conf.d/vscode.conf /etc/supervisor/conf.d/vscode.conf
 
 # Copy nginx configuration
 COPY nginx/nginx.conf       /etc/nginx/nginx.conf
