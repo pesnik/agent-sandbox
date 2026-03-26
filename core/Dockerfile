@@ -100,9 +100,10 @@ COPY supervisord/conf.d/chromium.conf /etc/supervisor/conf.d/chromium.conf
 COPY nginx/nginx.conf       /etc/nginx/nginx.conf
 COPY nginx/conf.d/default.conf /etc/nginx/conf.d/default.conf
 
-# Copy API and MCP server
+# Copy API, MCP server, and stealth extension
 COPY api/ /opt/sandbox/api/
 COPY mcp_server/ /opt/sandbox/mcp_server/
+COPY stealth-extension/ /opt/sandbox/stealth-extension/
 
 # Copy entrypoint
 COPY entrypoint.sh /entrypoint.sh
