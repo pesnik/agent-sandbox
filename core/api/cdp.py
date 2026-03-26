@@ -94,6 +94,61 @@ async def _open_session() -> tuple[aiohttp.ClientSession, CDPSession]:
 
 
 # ---------------------------------------------------------------------------
+# Stealth — hides automation signals on every new document
+# ---------------------------------------------------------------------------
+
+_STEALTH_SCRIPT = """
+(() => {
+  // Hide navigator.webdriver
+  Object.defineProperty(navigator, 'webdriver', {
+    get: () => undefined,
+    configurable: true,
+  });
+
+  // Spoof plugins array (empty in headless)
+  Object.defineProperty(navigator, 'plugins', {
+    get: () => [1, 2, 3, 4, 5],
+    configurable: true,
+  });
+
+  // Spoof languages
+  Object.defineProperty(navigator, 'languages', {
+    get: () => ['en-US', 'en'],
+    configurable: true,
+  });
+
+  // Remove automation-related chrome runtime signals
+  if (window.chrome) {
+    window.chrome.runtime = window.chrome.runtime || {};
+  }
+
+  // Fix permissions.query — headless returns 'denied' for notifications
+  const origQuery = window.Permissions && window.Permissions.prototype.query;
+  if (origQuery) {
+    window.Permissions.prototype.query = function(params) {
+      if (params && params.name === 'notifications') {
+        return Promise.resolve({ state: Notification.permission });
+      }
+      return origQuery.apply(this, arguments);
+    };
+  }
+})();
+"""
+
+
+async def _install_stealth(cdp: "CDPSession") -> None:
+    """Inject stealth script so it runs before every page's JS."""
+    try:
+        await cdp.send("Page.enable", {})
+        await cdp.send(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {"source": _STEALTH_SCRIPT},
+        )
+    except Exception:
+        pass  # non-fatal
+
+
+# ---------------------------------------------------------------------------
 # Public CDP tools
 # ---------------------------------------------------------------------------
 
@@ -107,6 +162,7 @@ async def navigate(url: str) -> dict[str, Any]:
     """
     http, cdp = await _open_session()
     try:
+        await _install_stealth(cdp)
         result = await cdp.send("Page.navigate", {"url": url})
         # Wait for load to settle
         await asyncio.sleep(1.0)
