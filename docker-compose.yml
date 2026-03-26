@@ -22,6 +22,7 @@ services:
       - "${NOVNC_PORT:-6080}:6080"   # noVNC WebSocket
       - "${MCP_PORT:-8079}:8079"     # MCP server
       - "${API_PORT:-8091}:8091"     # REST API v1
+      - "${CDP_PORT:-9222}:9222"     # Chromium CDP (for Playwright connect_over_cdp)
     environment:
       - VNC_PASSWORD=${VNC_PASSWORD:-sandbox}
       - DISPLAY=:1
