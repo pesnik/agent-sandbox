@@ -1,9 +1,11 @@
 """
 server.py — MCP server for the agent-sandbox.
 
-Exposes 12 tools over HTTP/SSE on port 8079:
+Exposes tools over HTTP/SSE on port 8079:
   - shell_execute, file_read, file_write, file_list, file_delete
   - browser_navigate, browser_screenshot, browser_click, browser_type, browser_evaluate
+  - outlook_list_emails, outlook_read_email, outlook_search_emails,
+    outlook_send_email, outlook_reply_email, outlook_forward_email
   - android_send_sms, android_screenshot
 
 Start with:
@@ -166,6 +168,97 @@ TOOLS: list[Tool] = [
             "required": ["js"],
         },
     ),
+    # --- Outlook ---
+    Tool(
+        name="outlook_list_emails",
+        description=(
+            "List emails from the Outlook inbox visible in the browser. "
+            "Returns sender, subject, time, preview for each email. "
+            "Outlook must be open and logged in (via VNC)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max emails to return", "default": 10},
+            },
+        },
+    ),
+    Tool(
+        name="outlook_read_email",
+        description=(
+            "Click an email at the given index in the Outlook inbox and return its full content "
+            "(subject, from, to, cc, date, body text)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "index": {"type": "integer", "description": "Email index in the list (0-based)"},
+            },
+            "required": ["index"],
+        },
+    ),
+    Tool(
+        name="outlook_search_emails",
+        description=(
+            "Search Outlook emails using the search bar and return matching results."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query text"},
+                "limit": {"type": "integer", "description": "Max results to return", "default": 10},
+            },
+            "required": ["query"],
+        },
+    ),
+    Tool(
+        name="outlook_send_email",
+        description=(
+            "Compose and send a new email via Outlook Web. "
+            "Clicks New Mail, fills To/Subject/Body, and clicks Send."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient address(es), comma-separated"},
+                "subject": {"type": "string", "description": "Email subject"},
+                "body": {"type": "string", "description": "Email body text"},
+                "cc": {"type": "string", "description": "CC address(es), comma-separated", "default": ""},
+            },
+            "required": ["to", "subject", "body"],
+        },
+    ),
+    Tool(
+        name="outlook_reply_email",
+        description=(
+            "Reply (or reply-all) to the currently open email in Outlook. "
+            "Use outlook_read_email first to open the email you want to reply to."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "body": {"type": "string", "description": "Reply body text"},
+                "reply_all": {"type": "boolean", "description": "Reply-all instead of reply", "default": False},
+            },
+            "required": ["body"],
+        },
+    ),
+    Tool(
+        name="outlook_forward_email",
+        description=(
+            "Forward the currently open email in Outlook to new recipient(s). "
+            "Use outlook_read_email first to open the email you want to forward."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient address(es), comma-separated"},
+                "body": {"type": "string", "description": "Optional message to add", "default": ""},
+            },
+            "required": ["to"],
+        },
+    ),
+    # --- Android ---
     Tool(
         name="android_send_sms",
         description="Send an SMS from the connected Android device via ADB.",
@@ -258,6 +351,254 @@ async def _file_delete(path: str) -> dict[str, Any]:
     else:
         await aiofiles.os.remove(path)
     return {"path": path, "deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# Outlook implementations — use raw CDP (navigate, evaluate, click, type_text)
+# Same JS extraction logic as autumn-sandbox/services/outlook.py
+# ---------------------------------------------------------------------------
+
+OUTLOOK_URL: str = os.getenv("OUTLOOK_URL", "https://outlook.office.com")
+
+# Selectors — aria-label / role based for stability across Outlook updates
+_OL_SEL = {
+    "new_mail": '[aria-label="New mail"]',
+    "email_list": '[role="listbox"]',
+    "email_item": '[role="listbox"] [role="option"]',
+    "reading_pane": '[role="document"]',
+    "search_input": '#topSearchInput, input[aria-label*="Search"]',
+    "to_field": 'div[aria-label="To"]',
+    "cc_field": 'div[aria-label="Cc"]',
+    "subject_field": 'input[placeholder="Add a subject"]',
+    "body_field": 'div[aria-label="Message body, press Alt+F10 to exit"]',
+    "send_button": 'button[aria-label="Send"]',
+    "reply_button": 'button[aria-label="Reply"], [role="menuitem"][aria-label="Reply"]',
+    "reply_all_button": 'button[aria-label="Reply all"], [role="menuitem"][aria-label="Reply all"]',
+    "forward_button": 'button[aria-label="Forward"], [role="menuitem"][aria-label="Forward"]',
+}
+
+# JS: extract email list items from the inbox
+_JS_LIST_EMAILS = """
+(function(limit) {
+    const items = document.querySelectorAll('[role="listbox"] [role="option"]');
+    return Array.from(items).slice(0, limit).map((el, idx) => {
+        const label = el.getAttribute('aria-label') || '';
+        const convId = el.getAttribute('data-convid') || '';
+        const unread = label.toLowerCase().startsWith('unread');
+        const leaves = Array.from(el.querySelectorAll('span, div'))
+            .filter(s => s.children.length === 0 && (s.innerText || '').trim());
+        let sender = '', senderEmail = '', subject = '', time = '', timeFull = '', preview = '';
+        for (const s of leaves) {
+            const text = (s.innerText || '').trim();
+            const title = s.getAttribute('title') || '';
+            if (!sender && title.includes('@')) { sender = text; senderEmail = title; }
+            else if (!subject && sender && !time) { subject = text; }
+            else if (!time && /\\d{1,2}:\\d{2}/.test(text)) { time = text; timeFull = title || text; }
+            else if (sender && subject && time && !preview) { preview = text; }
+        }
+        return {index: idx, convId, unread, sender, senderEmail, subject, time, timeFull, preview};
+    });
+})(%d)
+"""
+
+# JS: read email header from the reading pane
+_JS_READ_HEADER = """
+(function() {
+    const h3s = Array.from(document.querySelectorAll('[role="heading"][aria-level="3"]'));
+    let subject = '', from_ = '', to_ = '', cc_ = '', date_ = '';
+    for (const el of h3s) {
+        const text = (el.innerText || '').trim();
+        if (!text) continue;
+        if (el.tagName === 'DIV' && !subject && !text.startsWith('To:') && !text.startsWith('Cc:') && !text.match(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)/))
+            subject = text.split('\\n')[0];
+        if (el.tagName === 'SPAN' && text.includes('@') && !from_) from_ = text;
+        if (text.startsWith('To:')) to_ = text;
+        if (text.startsWith('Cc:')) cc_ = text;
+        if (text.match(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\\s/)) date_ = text;
+    }
+    return {subject, from_: from_, to_: to_, cc_: cc_, date_: date_};
+})()
+"""
+
+# JS: read body from the reading pane
+_JS_READ_BODY = """
+(function() {
+    const doc = document.querySelector('[role="document"]');
+    if (!doc) return {body_text: ''};
+    return {body_text: doc.innerText || ''};
+})()
+"""
+
+
+async def _outlook_ensure_mail() -> dict[str, Any]:
+    """Navigate to Outlook mail if not already there. Returns login check."""
+    from cdp import evaluate, navigate
+    # Check current URL
+    url_result = await evaluate("window.location.href")
+    current = str(url_result.get("result", "")).lower()
+    if "outlook" not in current or "mail" not in current:
+        await navigate(f"{OUTLOOK_URL}/mail/")
+        await asyncio.sleep(3)
+    # Check if logged in
+    check = await evaluate(f'!!document.querySelector(\'{_OL_SEL["new_mail"]}\')')
+    if not check.get("result"):
+        return {"error": "Not logged in. Open VNC (port 6080) and log into Outlook manually."}
+    return {"status": "ok"}
+
+
+async def _outlook_list_emails(limit: int = 10) -> dict[str, Any]:
+    from cdp import evaluate
+    login = await _outlook_ensure_mail()
+    if "error" in login:
+        return login
+    await asyncio.sleep(1)
+    result = await evaluate(_JS_LIST_EMAILS % limit)
+    return {"emails": result.get("result", [])}
+
+
+async def _outlook_read_email(index: int) -> dict[str, Any]:
+    from cdp import evaluate, click
+    login = await _outlook_ensure_mail()
+    if "error" in login:
+        return login
+    # Click email at index
+    click_js = f'document.querySelectorAll(\'{_OL_SEL["email_item"]}\')[{index}].click()'
+    await evaluate(click_js)
+    await asyncio.sleep(2)
+    # Check reading pane appeared
+    check = await evaluate(f'!!document.querySelector(\'{_OL_SEL["reading_pane"]}\')')
+    if not check.get("result"):
+        return {"error": "Reading pane did not appear after clicking email"}
+    header = await evaluate(_JS_READ_HEADER)
+    body = await evaluate(_JS_READ_BODY)
+    h = header.get("result", {})
+    b = body.get("result", {})
+    return {
+        "index": index,
+        "subject": h.get("subject", ""),
+        "from": h.get("from_", ""),
+        "to": h.get("to_", ""),
+        "cc": h.get("cc_", ""),
+        "date": h.get("date_", ""),
+        "body_text": b.get("body_text", ""),
+    }
+
+
+async def _outlook_search_emails(query: str, limit: int = 10) -> dict[str, Any]:
+    from cdp import evaluate, click, type_text
+    login = await _outlook_ensure_mail()
+    if "error" in login:
+        return login
+    # Click search, type query, press Enter
+    await click(_OL_SEL["search_input"])
+    await asyncio.sleep(0.5)
+    await type_text(_OL_SEL["search_input"], query)
+    await asyncio.sleep(0.5)
+    # Press Enter via JS
+    await evaluate("""
+        document.querySelector('#topSearchInput, input[aria-label*="Search"]')
+            .dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', keyCode:13, bubbles:true}))
+    """)
+    await asyncio.sleep(3)
+    result = await evaluate(_JS_LIST_EMAILS % limit)
+    return {"query": query, "emails": result.get("result", [])}
+
+
+async def _outlook_send_email(to: str, subject: str, body: str, cc: str = "") -> dict[str, Any]:
+    from cdp import evaluate, click, type_text
+    login = await _outlook_ensure_mail()
+    if "error" in login:
+        return login
+    # Click New Mail
+    await click(_OL_SEL["new_mail"])
+    await asyncio.sleep(2)
+    # To
+    await click(_OL_SEL["to_field"])
+    await asyncio.sleep(0.3)
+    for addr in to.split(","):
+        await type_text(_OL_SEL["to_field"], addr.strip())
+        await asyncio.sleep(0.3)
+        await evaluate("""
+            document.querySelector('div[aria-label="To"]')
+                .dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', keyCode:13, bubbles:true}))
+        """)
+        await asyncio.sleep(0.3)
+    # CC
+    if cc:
+        # Try to show CC field
+        await evaluate("""
+            const btn = document.querySelector('button[aria-label="Show Cc"]');
+            if (btn) btn.click();
+        """)
+        await asyncio.sleep(0.5)
+        await click(_OL_SEL["cc_field"])
+        for addr in cc.split(","):
+            await type_text(_OL_SEL["cc_field"], addr.strip())
+            await asyncio.sleep(0.3)
+            await evaluate("""
+                document.querySelector('div[aria-label="Cc"]')
+                    .dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', keyCode:13, bubbles:true}))
+            """)
+            await asyncio.sleep(0.3)
+    # Subject
+    await click(_OL_SEL["subject_field"])
+    await type_text(_OL_SEL["subject_field"], subject)
+    # Body
+    await click(_OL_SEL["body_field"])
+    await asyncio.sleep(0.3)
+    await type_text(_OL_SEL["body_field"], body)
+    await asyncio.sleep(0.5)
+    # Send
+    await click(_OL_SEL["send_button"])
+    await asyncio.sleep(2)
+    return {"status": "sent", "to": to, "subject": subject}
+
+
+async def _outlook_reply_email(body: str, reply_all: bool = False) -> dict[str, Any]:
+    from cdp import evaluate, click, type_text
+    sel = _OL_SEL["reply_all_button"] if reply_all else _OL_SEL["reply_button"]
+    # Try each selector variant (comma-separated)
+    for s in sel.split(", "):
+        result = await click(s.strip())
+        if result.get("status") == "ok":
+            break
+    await asyncio.sleep(2)
+    await click(_OL_SEL["body_field"])
+    await asyncio.sleep(0.3)
+    await type_text(_OL_SEL["body_field"], body)
+    await asyncio.sleep(0.5)
+    await click(_OL_SEL["send_button"])
+    await asyncio.sleep(2)
+    action = "reply_all" if reply_all else "reply"
+    return {"status": "sent", "action": action}
+
+
+async def _outlook_forward_email(to: str, body: str = "") -> dict[str, Any]:
+    from cdp import evaluate, click, type_text
+    sel = _OL_SEL["forward_button"]
+    for s in sel.split(", "):
+        result = await click(s.strip())
+        if result.get("status") == "ok":
+            break
+    await asyncio.sleep(2)
+    # To
+    await click(_OL_SEL["to_field"])
+    for addr in to.split(","):
+        await type_text(_OL_SEL["to_field"], addr.strip())
+        await asyncio.sleep(0.3)
+        await evaluate("""
+            document.querySelector('div[aria-label="To"]')
+                .dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', keyCode:13, bubbles:true}))
+        """)
+        await asyncio.sleep(0.3)
+    if body:
+        await click(_OL_SEL["body_field"])
+        await asyncio.sleep(0.3)
+        await type_text(_OL_SEL["body_field"], body)
+    await asyncio.sleep(0.5)
+    await click(_OL_SEL["send_button"])
+    await asyncio.sleep(2)
+    return {"status": "sent", "action": "forward", "to": to}
 
 
 async def _android_send_sms(number: str, message: str) -> dict[str, Any]:
@@ -361,6 +702,43 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
         elif name == "browser_evaluate":
             from cdp import evaluate
             result = await evaluate(arguments["js"])
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "outlook_list_emails":
+            result = await _outlook_list_emails(limit=arguments.get("limit", 10))
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "outlook_read_email":
+            result = await _outlook_read_email(index=arguments["index"])
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "outlook_search_emails":
+            result = await _outlook_search_emails(
+                query=arguments["query"], limit=arguments.get("limit", 10)
+            )
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "outlook_send_email":
+            result = await _outlook_send_email(
+                to=arguments["to"],
+                subject=arguments["subject"],
+                body=arguments["body"],
+                cc=arguments.get("cc", ""),
+            )
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "outlook_reply_email":
+            result = await _outlook_reply_email(
+                body=arguments["body"],
+                reply_all=arguments.get("reply_all", False),
+            )
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "outlook_forward_email":
+            result = await _outlook_forward_email(
+                to=arguments["to"],
+                body=arguments.get("body", ""),
+            )
             return [TextContent(type="text", text=json.dumps(result))]
 
         elif name == "android_send_sms":
