@@ -115,6 +115,29 @@ Calling `navigate()` unconditionally reloads the page and destroys live state (e
 WhatsApp login session). `navigate_if_needed` checks `window.location.href` first and
 only issues `Page.navigate` when the current URL doesn't already match.
 
+## WhatsApp MCP tools
+
+Three tools exposed via the MCP server (`/mcp/sse`) that automate WhatsApp Web running
+in the persistent VNC browser session. No re-login needed — session state is preserved.
+
+| Tool | Required args | Optional |
+|------|--------------|---------|
+| `whatsapp_list_chats` | — | `limit` (default 20) |
+| `whatsapp_read_chat` | `chat` | `limit` (default 20) |
+| `whatsapp_send_message` | `to`, `message` | — |
+
+`chat` / `to` accepts either a **contact/group name** (e.g. `"EDE Internal"`) or a
+**phone number** (e.g. `"880XXXXXXXXXX"`). Phone numbers open via
+`https://web.whatsapp.com/send?phone=NUMBER`; names are resolved from the visible
+sidebar via `span[title="..."]`.
+
+Message content is extracted from `[data-pre-plain-text]` attributes on message
+bubbles — format `[HH:MM, DD/MM/YYYY] Sender: ` — so sender and time are always
+structured fields, not parsed text.
+
+`_whatsapp_ensure_open()` checks `window.location.href` before navigating, matching
+the SDK's `navigate_if_needed` pattern — the existing login session is never disrupted.
+
 ## `/v1/browser/click` — selector or coordinates
 
 The click endpoint accepts either a CSS selector or absolute viewport coordinates:

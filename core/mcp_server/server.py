@@ -6,6 +6,7 @@ Exposes tools over HTTP/SSE on port 8079:
   - browser_navigate, browser_screenshot, browser_click, browser_type, browser_evaluate
   - outlook_list_emails, outlook_read_email, outlook_search_emails,
     outlook_send_email, outlook_reply_email, outlook_forward_email
+  - whatsapp_list_chats, whatsapp_read_chat, whatsapp_send_message
   - android_send_sms, android_screenshot
 
 Start with:
@@ -277,6 +278,52 @@ TOOLS: list[Tool] = [
         inputSchema={
             "type": "object",
             "properties": {},
+        },
+    ),
+    # --- WhatsApp ---
+    Tool(
+        name="whatsapp_list_chats",
+        description=(
+            "List recent WhatsApp chats visible in the sidebar. "
+            "Returns name, last message preview, and timestamp for each. "
+            "WhatsApp Web must be open and logged in via VNC."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max chats to return", "default": 20},
+            },
+        },
+    ),
+    Tool(
+        name="whatsapp_read_chat",
+        description=(
+            "Open a WhatsApp chat and return the last N messages with sender and timestamp. "
+            "Accepts a contact/group name (e.g. 'EDE Internal') or a phone number (e.g. '880XXXXXXXXXX')."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "chat": {"type": "string", "description": "Contact/group name or phone number"},
+                "limit": {"type": "integer", "description": "Number of recent messages to return", "default": 20},
+            },
+            "required": ["chat"],
+        },
+    ),
+    Tool(
+        name="whatsapp_send_message",
+        description=(
+            "Send a WhatsApp message to a contact, group, or phone number. "
+            "Accepts a contact/group name (e.g. 'EDE Internal') or a phone number (e.g. '880XXXXXXXXXX'). "
+            "WhatsApp Web must be open and logged in via VNC."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Contact/group name or phone number"},
+                "message": {"type": "string", "description": "Message text to send"},
+            },
+            "required": ["to", "message"],
         },
     ),
 ]
@@ -601,6 +648,154 @@ async def _outlook_forward_email(to: str, body: str = "") -> dict[str, Any]:
     return {"status": "sent", "action": "forward", "to": to}
 
 
+# ---------------------------------------------------------------------------
+# WhatsApp implementations — browser automation against WhatsApp Web (VNC)
+# ---------------------------------------------------------------------------
+
+_WA_INPUT_SEL = 'footer div[contenteditable="true"]'
+
+# JS: extract chats from the sidebar
+_JS_WA_LIST_CHATS = """
+(function(limit) {
+    const rows = document.querySelectorAll('#pane-side span[title]');
+    const seen = new Set();
+    const chats = [];
+    for (const el of rows) {
+        const name = el.getAttribute('title') || '';
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        const row = el.closest('[role="listitem"]') || el.parentElement;
+        let time = '', preview = '';
+        if (row) {
+            const texts = Array.from(row.querySelectorAll('span'))
+                .map(s => s.children.length === 0 ? (s.innerText || '').trim() : '')
+                .filter(t => t && t !== name);
+            time = texts.find(t => /^\\d{1,2}:\\d{2}/.test(t) || t === 'Yesterday' || /^\\d{1,2}\\//.test(t)) || '';
+            preview = texts.filter(t => t !== time).join(' ').slice(0, 80);
+        }
+        chats.push({name, time, preview});
+        if (chats.length >= limit) break;
+    }
+    return chats;
+})(%d)
+"""
+
+# JS: extract messages from the open chat panel
+_JS_WA_READ_MESSAGES = """
+(function(limit) {
+    const msgs = document.querySelectorAll('[data-pre-plain-text]');
+    return Array.from(msgs).slice(-limit).map(el => {
+        const meta = el.getAttribute('data-pre-plain-text') || '';
+        const match = meta.match(/\\[([^\\]]+)\\]\\s*([^:]+):\\s*/);
+        const time   = match ? match[1].trim() : '';
+        const sender = match ? match[2].trim() : '';
+        const textEl = el.querySelector('.copyable-text');
+        const text   = textEl ? textEl.innerText.trim() : el.innerText.trim();
+        return {time, sender, text};
+    }).filter(m => m.text);
+})(%d)
+"""
+
+
+def _is_phone(value: str) -> bool:
+    """Return True if value looks like a phone number (digits, optional leading +)."""
+    stripped = value.lstrip("+").replace(" ", "").replace("-", "")
+    return stripped.isdigit() and len(stripped) >= 7
+
+
+async def _whatsapp_ensure_open() -> dict[str, Any]:
+    """Ensure WhatsApp Web is open and logged in. navigate_if_needed style."""
+    from cdp import evaluate, navigate
+    url_result = await evaluate("window.location.href")
+    current = str(url_result.get("result", ""))
+    if "web.whatsapp.com" not in current:
+        await navigate("https://web.whatsapp.com")
+        await asyncio.sleep(6)
+    # Confirm sidebar is present (logged in)
+    check = await evaluate('!!document.querySelector("#pane-side")')
+    if not check.get("result"):
+        return {"error": "WhatsApp not logged in. Open VNC (port 6080) and scan the QR code."}
+    return {"status": "ok"}
+
+
+async def _whatsapp_open_chat(chat: str) -> dict[str, Any]:
+    """Open a specific chat by name or phone number."""
+    from cdp import evaluate, navigate
+    if _is_phone(chat):
+        phone = chat.lstrip("+").replace(" ", "").replace("-", "")
+        login = await _whatsapp_ensure_open()
+        if "error" in login:
+            return login
+        await navigate(f"https://web.whatsapp.com/send?phone={phone}")
+        await asyncio.sleep(6)
+        # Confirm input box appeared (chat opened)
+        check = await evaluate(f'!!document.querySelector(\'{_WA_INPUT_SEL}\')')
+        if not check.get("result"):
+            return {"error": f"Could not open chat for phone {chat}. Number may not be on WhatsApp."}
+    else:
+        login = await _whatsapp_ensure_open()
+        if "error" in login:
+            return login
+        result = await evaluate(f"""
+        (() => {{
+            const el = document.querySelector('span[title="{chat}"]');
+            if (!el) return 'NOT_FOUND';
+            const parent = el.closest('[role="listitem"]') || el.parentElement;
+            if (parent) {{ parent.click(); return 'CLICKED'; }}
+            return 'NO_PARENT';
+        }})()
+        """)
+        val = result.get("result", "")
+        if val == "NOT_FOUND":
+            return {"error": f"Chat '{chat}' not found in sidebar. Scroll or search manually first."}
+        await asyncio.sleep(2)
+    return {"status": "ok"}
+
+
+async def _whatsapp_list_chats(limit: int = 20) -> dict[str, Any]:
+    from cdp import evaluate
+    login = await _whatsapp_ensure_open()
+    if "error" in login:
+        return login
+    result = await evaluate(_JS_WA_LIST_CHATS % limit)
+    chats = result.get("result") or []
+    return {"chats": chats, "count": len(chats)}
+
+
+async def _whatsapp_read_chat(chat: str, limit: int = 20) -> dict[str, Any]:
+    from cdp import evaluate
+    opened = await _whatsapp_open_chat(chat)
+    if "error" in opened:
+        return opened
+    await asyncio.sleep(1)
+    result = await evaluate(_JS_WA_READ_MESSAGES % limit)
+    messages = result.get("result") or []
+    return {"chat": chat, "messages": messages, "count": len(messages)}
+
+
+async def _whatsapp_send_message(to: str, message: str) -> dict[str, Any]:
+    from cdp import evaluate, type_text
+    opened = await _whatsapp_open_chat(to)
+    if "error" in opened:
+        return opened
+    # Focus and type
+    await evaluate(f'document.querySelector(\'{_WA_INPUT_SEL}\')?.focus()')
+    await asyncio.sleep(0.5)
+    await type_text(_WA_INPUT_SEL, message)
+    await asyncio.sleep(0.5)
+    # Send with Enter keydown
+    await evaluate(f"""
+    (() => {{
+        const el = document.querySelector('{_WA_INPUT_SEL}');
+        if (el) el.dispatchEvent(new KeyboardEvent('keydown', {{
+            key: 'Enter', keyCode: 13, bubbles: true, cancelable: true
+        }}));
+    }})()
+    """)
+    await asyncio.sleep(2)
+    return {"status": "sent", "to": to, "message": message}
+
+
 async def _android_send_sms(number: str, message: str) -> dict[str, Any]:
     import urllib.parse
     encoded_msg = urllib.parse.quote(message)
@@ -738,6 +933,24 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
             result = await _outlook_forward_email(
                 to=arguments["to"],
                 body=arguments.get("body", ""),
+            )
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "whatsapp_list_chats":
+            result = await _whatsapp_list_chats(limit=arguments.get("limit", 20))
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "whatsapp_read_chat":
+            result = await _whatsapp_read_chat(
+                chat=arguments["chat"],
+                limit=arguments.get("limit", 20),
+            )
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "whatsapp_send_message":
+            result = await _whatsapp_send_message(
+                to=arguments["to"],
+                message=arguments["message"],
             )
             return [TextContent(type="text", text=json.dumps(result))]
 
