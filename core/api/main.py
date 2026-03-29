@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from cdp import (
     click as cdp_click,
+    click_at as cdp_click_at,
     evaluate as cdp_evaluate,
     navigate as cdp_navigate,
     screenshot as cdp_screenshot,
@@ -75,7 +76,9 @@ class BrowserNavigateRequest(BaseModel):
 
 
 class BrowserClickRequest(BaseModel):
-    selector: str
+    selector: str | None = None
+    x: float | None = None
+    y: float | None = None
 
 
 class BrowserTypeRequest(BaseModel):
@@ -262,10 +265,18 @@ async def browser_screenshot() -> dict[str, Any]:
 
 @app.post("/v1/browser/click")
 async def browser_click(req: BrowserClickRequest) -> dict[str, Any]:
-    """Click the first element matching a CSS selector."""
+    """Click by CSS selector or by absolute viewport coordinates (x, y)."""
     try:
-        result = await cdp_click(req.selector)
-        return {"selector": result["selector"], "status": result["status"]}
+        if req.selector is not None:
+            result = await cdp_click(req.selector)
+            return {"selector": result["selector"], "status": result["status"]}
+        elif req.x is not None and req.y is not None:
+            result = await cdp_click_at(req.x, req.y)
+            return {"x": result["x"], "y": result["y"], "status": result["status"]}
+        else:
+            raise HTTPException(status_code=400, detail="Provide 'selector' or 'x' and 'y'")
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

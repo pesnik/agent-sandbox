@@ -201,6 +201,18 @@ async def screenshot() -> dict[str, str]:
         await http.close()
 
 
+async def _dispatch_click(cdp: "CDPSession", x: float, y: float) -> None:
+    """Send a mousePressed + mouseReleased pair at (x, y) via CDP."""
+    await cdp.send(
+        "Input.dispatchMouseEvent",
+        {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1},
+    )
+    await cdp.send(
+        "Input.dispatchMouseEvent",
+        {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1},
+    )
+
+
 async def click(selector: str) -> dict[str, Any]:
     """
     Click the first DOM element matching `selector` (CSS selector).
@@ -210,7 +222,6 @@ async def click(selector: str) -> dict[str, Any]:
     """
     http, cdp = await _open_session()
     try:
-        # Resolve element and obtain bounding box
         doc = await cdp.send("DOM.getDocument", {"depth": 0})
         root_node_id = doc["root"]["nodeId"]
 
@@ -228,15 +239,24 @@ async def click(selector: str) -> dict[str, Any]:
         cx = (content[0] + content[4]) / 2
         cy = (content[1] + content[5]) / 2
 
-        await cdp.send(
-            "Input.dispatchMouseEvent",
-            {"type": "mousePressed", "x": cx, "y": cy, "button": "left", "clickCount": 1},
-        )
-        await cdp.send(
-            "Input.dispatchMouseEvent",
-            {"type": "mouseReleased", "x": cx, "y": cy, "button": "left", "clickCount": 1},
-        )
+        await _dispatch_click(cdp, cx, cy)
         return {"selector": selector, "status": "ok"}
+    finally:
+        await cdp.close()
+        await http.close()
+
+
+async def click_at(x: float, y: float) -> dict[str, Any]:
+    """
+    Click at absolute viewport coordinates (x, y).
+
+    Returns:
+        { "x": float, "y": float, "status": "ok" }
+    """
+    http, cdp = await _open_session()
+    try:
+        await _dispatch_click(cdp, x, y)
+        return {"x": x, "y": y, "status": "ok"}
     finally:
         await cdp.close()
         await http.close()
