@@ -115,6 +115,27 @@ Calling `navigate()` unconditionally reloads the page and destroys live state (e
 WhatsApp login session). `navigate_if_needed` checks `window.location.href` first and
 only issues `Page.navigate` when the current URL doesn't already match.
 
+## Google Messages MCP tools
+
+Three tools for Google Messages Web (`messages.google.com`) running in the VNC browser.
+Requires one-time QR pairing via VNC — session persists across runs.
+
+| Tool | Required args | Optional |
+|------|--------------|---------|
+| `google_messages_list_chats` | — | `limit` (default 20) |
+| `google_messages_read_chat` | `chat` | `limit` (default 20) |
+| `google_messages_send_message` | `to`, `message` | — |
+
+`chat` / `to` accepts a **contact name** (partial match) or a **conversation index**
+(string digit, from `google_messages_list_chats`).
+
+For `google_messages_send_message`: existing contacts are opened by name; phone numbers
+trigger the "Start chat" FAB flow to initiate a new SMS conversation.
+
+DOM selectors used: `mws-conversation-list-item` for the sidebar,
+`mws-message-wrapper` for message bubbles, `[data-e2e-send-button]` for send —
+matching the same elements used by the Playwright-based `GoogleMessagesService`.
+
 ## WhatsApp MCP tools
 
 Three tools exposed via the MCP server (`/mcp/sse`) that automate WhatsApp Web running
