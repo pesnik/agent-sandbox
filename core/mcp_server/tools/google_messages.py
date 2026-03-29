@@ -265,8 +265,9 @@ async def _google_messages_read_chat(chat: str, limit: int = 20) -> dict[str, An
             if (container) container.scrollTop = 0;
             return document.querySelectorAll('mws-message-wrapper').length;
         })()"""
+        max_scrolls = max(10, limit // 25)
         prev_count = 0
-        for _ in range(10):
+        for _ in range(max_scrolls):
             scroll_result = await evaluate_in_tab(_JS_SCROLL, _GM_HOST)
             current_count = scroll_result.get("result", 0) or 0
             if current_count >= limit or current_count == prev_count:

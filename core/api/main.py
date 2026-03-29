@@ -416,10 +416,11 @@ async def google_messages_read(req: GoogleMessagesReadRequest) -> dict[str, Any]
         await cdp_click_at(pos["x"], pos["y"])
         await asyncio.sleep(2)
 
-        # Scroll up to load older messages
+        # Scroll up to load older messages (scale iterations with limit)
         if req.limit > 25:
+            max_scrolls = max(10, req.limit // 25)
             prev_count = 0
-            for _ in range(10):
+            for _ in range(max_scrolls):
                 scroll_result = await cdp_evaluate(_JS_SCROLL_UP)
                 current_count = scroll_result.get("result", 0) or 0
                 if current_count >= req.limit or current_count == prev_count:
