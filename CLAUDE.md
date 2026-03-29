@@ -18,6 +18,15 @@ core/                        # Single Docker image (Ubuntu 22.04)
   api/main.py                # FastAPI routes (/v1/shell, /v1/files, /v1/browser)
   api/cdp.py                 # Pure CDP client (no Playwright dependency in the API)
   mcp_server/                # MCP server (FastAPI + SSE transport)
+    server.py                # Slim dispatcher — imports all tools from tools/
+    tools/                   # One module per tool category
+      __init__.py            # Aggregates TOOLS, HANDLERS, IMAGE_TOOLS
+      system.py              # shell_execute, file_read/write/list/delete
+      browser.py             # browser_navigate/screenshot/click/type/evaluate
+      outlook.py             # 9 Outlook tools (incl. list_folders, list_unread, move_email)
+      whatsapp.py            # whatsapp_list_chats/read_chat/send_message
+      google_messages.py     # google_messages_list_chats/read_chat/send_message
+      android.py             # android_send_sms, android_screenshot
   stealth-extension/         # Chrome extension — hides automation signals
     manifest.json            # Manifest V3, content_script, world: MAIN
     stealth.js               # Removes navigator.webdriver, spoofs plugins/mimeTypes
@@ -147,6 +156,36 @@ Calling `navigate()` unconditionally reloads the page and destroys live state (e
 WhatsApp login session). `navigate_if_needed` checks `window.location.href` first and
 only issues `Page.navigate` when the current URL doesn't already match.
 
+## MCP server architecture
+
+`core/mcp_server/server.py` is a slim dispatcher (~60 lines). All tool logic lives in `core/mcp_server/tools/`, one module per category. Each module exports three names:
+
+- `TOOLS: list[Tool]` — MCP tool definitions (name, description, inputSchema)
+- `HANDLERS: dict[str, Callable]` — async handler functions keyed by tool name
+- `IMAGE_TOOLS: set[str]` — tools that return base64 PNG (browser/android screenshot)
+
+`tools/__init__.py` merges them and re-exports the combined `TOOLS`, `HANDLERS`, `IMAGE_TOOLS`. Adding a new tool category = add a new module + one import line in `__init__.py`.
+
+## Outlook MCP tools
+
+Nine tools for Outlook Web (`outlook.office.com`) running in the persistent browser session. Requires one-time login — session persists across runs.
+
+| Tool | Required args | Optional |
+|------|--------------|---------|
+| `outlook_list_emails` | — | `limit` (default 20) |
+| `outlook_read_email` | `index` | — |
+| `outlook_search_emails` | `query` | `limit` (default 10) |
+| `outlook_send_email` | `to`, `subject`, `body` | `cc` |
+| `outlook_reply_email` | `index`, `body` | — |
+| `outlook_forward_email` | `index`, `to`, `body` | — |
+| `outlook_list_folders` | — | — |
+| `outlook_list_unread` | — | `scan_limit` (default 50) |
+| `outlook_move_email` | `index`, `folder` | — |
+
+`outlook_list_folders` reads `[role="treeitem"]` elements from Outlook's nav tree. The innerText format is `"\uXXXX\nFolderName"` (unicode icon + newline + name) — line-filtering is applied to extract the name.
+
+`outlook_move_email` strategy: (1) dismiss any open Fluent UI overlay via JS Escape dispatch; (2) JS `.click()` on the email item (bypasses pointer-event interception from overlays); (3) click `button[aria-label="Move to a different folder..."]`; (4) match folder in the picker by name.
+
 ## Google Messages MCP tools
 
 Three tools for Google Messages Web (`messages.google.com`) running in the VNC browser.
@@ -217,6 +256,8 @@ Coordinates map directly to `Input.dispatchMouseEvent` — no DOM query needed.
 | Shell timeout hangs | Child process keeps pipes open | Double `wait_for` with `communicate()` timeout |
 | reCAPTCHA / bot detected | `navigator.webdriver = true` | Stealth extension injected at `document_start` in MAIN world |
 | `make login` blocked | Headless Chrome using same data dir | Run `make stop` first, then `make login` |
+| Outlook move picker shows icon chars only | `[role="treeitem"]` innerText is `"\uXXXX\nName"` | Filter lines: skip single chars, digits, status words; take first valid line |
+| Outlook move click intercepted | Fluent UI `fluent-default-layer-host` overlay on top | Dispatch Escape via JS first; use JS `.click()` not Playwright pointer click |
 | Google Messages returns only 1 result | Page not fully loaded | `navigate_in_tab` + extra `asyncio.sleep(8)` on first open |
 | `PIDS[-1]` bad array subscript | macOS ships bash 3.2 (no negative indices) | Use named variable `PID=$!` instead |
 
