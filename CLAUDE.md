@@ -28,13 +28,43 @@ sdk/                         # Zero-dependency Python SDK for the REST API
   pyproject.toml             # pip install ./sdk
   README.md
 
+Makefile                     # Lifecycle commands for both local and Docker runtimes
 docker-compose.yml           # Main compose file (sandbox service)
 docker-compose.android.yml   # Optional Android 13 sidecar
 tests/e2e.py                 # 37 e2e tests — run against a live container
 modules/                     # Optional sidecar module definitions
-scripts/                     # Helper scripts
+scripts/
+  run-local.sh               # Native macOS runtime: headless Chrome + API + MCP
+  login.sh                   # Headed Chrome for one-time auth (WhatsApp, Messages, Outlook)
 mcp/                         # MCP tool definitions (for external agent use)
 ```
+
+## Two runtimes
+
+### Local (native macOS)
+
+`scripts/run-local.sh` starts three processes directly on macOS — no Docker, no VNC, no VS Code. ~60–70% less RAM than the Docker stack.
+
+| Process | How | Port |
+|---------|-----|------|
+| Chrome | `--headless=new` via system Chrome | 9222 |
+| REST API | `uvicorn main:app --app-dir core/api` | 8091 |
+| MCP server | `uvicorn server:create_app --factory --app-dir core/mcp_server` | 8079 |
+
+Key env vars set by the script:
+- `CDP_URL=http://localhost:9222` — used by `cdp.py`
+- `PYTHONPATH=core/api` — overrides the hardcoded `/opt/sandbox/api` path in `server.py`
+
+Chrome user-data-dir: `~/.config/agent-sandbox-local` — shared between `login.sh` (headed) and `run-local.sh` (headless), so sessions persist. Both cannot run simultaneously against the same data dir.
+
+**One-time login flow:**
+1. `make login` → headed Chrome opens WhatsApp, Google Messages, Outlook tabs
+2. Log in / scan QR codes → Cmd+Q
+3. `make start` → headless Chrome restores all sessions from the data dir
+
+### Docker (full stack)
+
+`docker-compose.yml` runs the full stack inside Ubuntu 22.04: VNC desktop (XFCE4 + TigerVNC), noVNC, nginx, Chrome, VS Code, API, MCP — all via supervisord. Use for remote servers or when VNC desktop access is needed.
 
 ## Key design decisions
 
@@ -65,15 +95,17 @@ mcp/                         # MCP tool definitions (for external agent use)
 
 ## Running tests
 
-Container must be running before tests:
-
 ```bash
-docker compose up -d --build
+# Local runtime (must be running via make start)
+make test
+
+# Docker runtime (container must be up)
+make docker-test
+# or directly:
 python tests/e2e.py
-# Expected: 37/37 passing
 ```
 
-Tests cover: status, shell (9), files (10), browser/CDP (7), MCP (2), concurrency (2), security/edge cases (6).
+Expected: 37/37 passing. Tests cover: status, shell (9), files (10), browser/CDP (7), MCP (2), concurrency (2), security/edge cases (6).
 
 ## Python SDK (sdk/)
 
@@ -184,6 +216,9 @@ Coordinates map directly to `Input.dispatchMouseEvent` — no DOM query needed.
 | File write 500 | Parent dir missing | `os.makedirs(parent, exist_ok=True)` |
 | Shell timeout hangs | Child process keeps pipes open | Double `wait_for` with `communicate()` timeout |
 | reCAPTCHA / bot detected | `navigator.webdriver = true` | Stealth extension injected at `document_start` in MAIN world |
+| `make login` blocked | Headless Chrome using same data dir | Run `make stop` first, then `make login` |
+| Google Messages returns only 1 result | Page not fully loaded | `navigate_in_tab` + extra `asyncio.sleep(8)` on first open |
+| `PIDS[-1]` bad array subscript | macOS ships bash 3.2 (no negative indices) | Use named variable `PID=$!` instead |
 
 ## Adding a new always-on service
 

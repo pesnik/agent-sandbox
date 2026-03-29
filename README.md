@@ -66,10 +66,37 @@ All core services start automatically — no modules to enable for the base stac
 
 ## Quick start
 
+Two runtimes are supported — pick one based on your environment.
+
+### Local (native macOS) — no Docker, low memory
+
+Runs Chrome headless + REST API + MCP server directly on macOS. No VNC, no VS Code, no container overhead (~60–70% less RAM than Docker).
+
 ```bash
 git clone https://github.com/pesnik/agent-sandbox
 cd agent-sandbox
-docker compose up -d --build
+
+# One-time: log into WhatsApp, Google Messages, Outlook (headed Chrome for QR/auth)
+make login
+
+# Start the sandbox (headless Chrome + API + MCP)
+make start
+```
+
+Services are available directly on their ports:
+
+| Service | URL |
+|---------|-----|
+| REST API | http://localhost:8091/v1/docs |
+| MCP SSE | http://localhost:8079/mcp/sse |
+| CDP | http://localhost:9222 |
+
+### Docker — full stack (VNC desktop, VS Code, nginx proxy)
+
+```bash
+git clone https://github.com/pesnik/agent-sandbox
+cd agent-sandbox
+make docker-up
 ```
 
 Open **http://localhost:8080** — the dashboard links to all services.
@@ -236,15 +263,42 @@ For a sidecar container, add a `docker-compose.override.yml` following the andro
 
 ---
 
-## Building
+## Makefile reference
 
-```bash
-# Build the core image
-docker compose build sandbox
+All lifecycle commands are in the `Makefile`. Run `make` to see the full list.
 
-# Force clean rebuild
-docker compose build --no-cache sandbox
+### Local commands
 
-# Run e2e tests (container must be up)
-python tests/e2e.py
-```
+| Command | Description |
+|---------|-------------|
+| `make setup` | Create `.venv-local` and install Python deps |
+| `make login` | Open headed Chrome for one-time login / QR pairing |
+| `make start` | Start headless Chrome + REST API + MCP |
+| `make stop` | Kill all local sandbox processes |
+| `make restart` | `stop` + `start` |
+| `make status` | Show which ports are live |
+| `make logs` | Tail Chrome + API + MCP logs simultaneously |
+| `make logs-chrome` | Chrome log only |
+| `make logs-api` | API log only |
+| `make logs-mcp` | MCP log only |
+| `make test` | Run e2e suite against the running local stack |
+| `make clean` | Remove `.venv-local` and Chrome profile data |
+
+### Docker commands
+
+| Command | Description |
+|---------|-------------|
+| `make docker-build` | Rebuild image from scratch (`--no-cache`) |
+| `make docker-up` | Start container |
+| `make docker-down` | Stop and remove container |
+| `make docker-restart` | `down` + `up` |
+| `make docker-logs` | Follow container logs |
+| `make docker-shell` | Open bash inside the container |
+| `make docker-test` | Run e2e suite against the running container |
+
+### Local runtime notes
+
+- Sessions (WhatsApp, Google Messages, Outlook) persist in `~/.config/agent-sandbox-local`. Re-run `make login` when a session expires.
+- Logs are written to `/tmp/agent-sandbox-{chrome,api,mcp}.log`.
+- Port overrides: `CDP_PORT=9333 API_PORT=8092 make start`
+- The `make login` step requires stopping `make start` first — both use the same Chrome user-data-dir and cannot run simultaneously.
