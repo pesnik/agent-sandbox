@@ -1,4 +1,5 @@
 """Outlook Web tools: list, read, search, move, send, reply, forward."""
+
 from __future__ import annotations
 
 import asyncio
@@ -14,19 +15,19 @@ OUTLOOK_URL: str = os.getenv("OUTLOOK_URL", "https://outlook.office.com")
 # ---------------------------------------------------------------------------
 
 _OL_SEL = {
-    "new_mail":        '[aria-label="New mail"]',
-    "email_list":      '[role="listbox"]',
-    "email_item":      '[role="listbox"] [role="option"]',
-    "reading_pane":    '[role="document"]',
-    "search_input":    '#topSearchInput, input[aria-label*="Search"]',
-    "to_field":        'div[aria-label="To"]',
-    "cc_field":        'div[aria-label="Cc"]',
-    "subject_field":   'input[placeholder="Add a subject"]',
-    "body_field":      'div[aria-label="Message body, press Alt+F10 to exit"]',
-    "send_button":     'button[aria-label="Send"]',
-    "reply_button":    'button[aria-label="Reply"], [role="menuitem"][aria-label="Reply"]',
-    "reply_all_button":'button[aria-label="Reply all"], [role="menuitem"][aria-label="Reply all"]',
-    "forward_button":  'button[aria-label="Forward"], [role="menuitem"][aria-label="Forward"]',
+    "new_mail": '[aria-label="New mail"]',
+    "email_list": '[role="listbox"]',
+    "email_item": '[role="listbox"] [role="option"]',
+    "reading_pane": '[role="document"]',
+    "search_input": '#topSearchInput, input[aria-label*="Search"]',
+    "to_field": 'div[aria-label="To"]',
+    "cc_field": 'div[aria-label="Cc"]',
+    "subject_field": 'input[placeholder="Add a subject"]',
+    "body_field": 'div[aria-label="Message body, press Alt+F10 to exit"]',
+    "send_button": 'button[aria-label="Send"]',
+    "reply_button": 'button[aria-label="Reply"], [role="menuitem"][aria-label="Reply"]',
+    "reply_all_button": 'button[aria-label="Reply all"], [role="menuitem"][aria-label="Reply all"]',
+    "forward_button": 'button[aria-label="Forward"], [role="menuitem"][aria-label="Forward"]',
 }
 
 # ---------------------------------------------------------------------------
@@ -120,7 +121,11 @@ TOOLS: list[Tool] = [
         inputSchema={
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "description": "Max emails to return", "default": 10},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max emails to return",
+                    "default": 10,
+                },
             },
         },
     ),
@@ -160,7 +165,10 @@ TOOLS: list[Tool] = [
         inputSchema={
             "type": "object",
             "properties": {
-                "index": {"type": "integer", "description": "Email index in the list (0-based)"},
+                "index": {
+                    "type": "integer",
+                    "description": "Email index in the list (0-based)",
+                },
             },
             "required": ["index"],
         },
@@ -195,7 +203,11 @@ TOOLS: list[Tool] = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query text"},
-                "limit": {"type": "integer", "description": "Max results to return", "default": 10},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return",
+                    "default": 10,
+                },
             },
             "required": ["query"],
         },
@@ -209,10 +221,17 @@ TOOLS: list[Tool] = [
         inputSchema={
             "type": "object",
             "properties": {
-                "to":      {"type": "string", "description": "Recipient address(es), comma-separated"},
+                "to": {
+                    "type": "string",
+                    "description": "Recipient address(es), comma-separated",
+                },
                 "subject": {"type": "string", "description": "Email subject"},
-                "body":    {"type": "string", "description": "Email body text"},
-                "cc":      {"type": "string", "description": "CC address(es), comma-separated", "default": ""},
+                "body": {"type": "string", "description": "Email body text"},
+                "cc": {
+                    "type": "string",
+                    "description": "CC address(es), comma-separated",
+                    "default": "",
+                },
             },
             "required": ["to", "subject", "body"],
         },
@@ -226,8 +245,12 @@ TOOLS: list[Tool] = [
         inputSchema={
             "type": "object",
             "properties": {
-                "body":      {"type": "string", "description": "Reply body text"},
-                "reply_all": {"type": "boolean", "description": "Reply-all instead of reply", "default": False},
+                "body": {"type": "string", "description": "Reply body text"},
+                "reply_all": {
+                    "type": "boolean",
+                    "description": "Reply-all instead of reply",
+                    "default": False,
+                },
             },
             "required": ["body"],
         },
@@ -241,8 +264,15 @@ TOOLS: list[Tool] = [
         inputSchema={
             "type": "object",
             "properties": {
-                "to":   {"type": "string", "description": "Recipient address(es), comma-separated"},
-                "body": {"type": "string", "description": "Optional message to prepend", "default": ""},
+                "to": {
+                    "type": "string",
+                    "description": "Recipient address(es), comma-separated",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Optional message to prepend",
+                    "default": "",
+                },
             },
             "required": ["to"],
         },
@@ -257,14 +287,17 @@ TOOLS: list[Tool] = [
 async def _outlook_ensure_mail() -> dict[str, Any]:
     """Navigate to Outlook mail if not already there, verify login."""
     from cdp import evaluate, navigate
+
     url_result = await evaluate("window.location.href")
     current = str(url_result.get("result", "")).lower()
     if "outlook" not in current or "mail" not in current:
         await navigate(f"{OUTLOOK_URL}/mail/")
         await asyncio.sleep(3)
-    check = await evaluate(f'!!document.querySelector(\'{_OL_SEL["new_mail"]}\')')
+    check = await evaluate(f"!!document.querySelector('{_OL_SEL['new_mail']}')")
     if not check.get("result"):
-        return {"error": "Not logged in. Open VNC (port 6080) and log into Outlook manually."}
+        return {
+            "error": "Not logged in. Open VNC (port 6080) and log into Outlook manually."
+        }
     return {"status": "ok"}
 
 
@@ -275,6 +308,7 @@ async def _outlook_ensure_mail() -> dict[str, Any]:
 
 async def _outlook_list_emails(limit: int = 10) -> dict[str, Any]:
     from cdp import evaluate
+
     login = await _outlook_ensure_mail()
     if "error" in login:
         return login
@@ -286,6 +320,7 @@ async def _outlook_list_emails(limit: int = 10) -> dict[str, Any]:
 async def _outlook_list_unread(scan_limit: int = 50) -> dict[str, Any]:
     """List only unread emails by scanning up to scan_limit inbox rows."""
     from cdp import evaluate
+
     login = await _outlook_ensure_mail()
     if "error" in login:
         return login
@@ -299,6 +334,7 @@ async def _outlook_list_unread(scan_limit: int = 50) -> dict[str, Any]:
 async def _outlook_list_folders() -> dict[str, Any]:
     """List folders from the Outlook left navigation pane."""
     from cdp import evaluate
+
     login = await _outlook_ensure_mail()
     if "error" in login:
         return login
@@ -309,13 +345,14 @@ async def _outlook_list_folders() -> dict[str, Any]:
 
 async def _outlook_read_email(index: int) -> dict[str, Any]:
     from cdp import evaluate
+
     login = await _outlook_ensure_mail()
     if "error" in login:
         return login
-    click_js = f'document.querySelectorAll(\'{_OL_SEL["email_item"]}\')[{index}]?.click()'
+    click_js = f"document.querySelectorAll('{_OL_SEL['email_item']}')[{index}]?.click()"
     await evaluate(click_js)
     await asyncio.sleep(2)
-    check = await evaluate(f'!!document.querySelector(\'{_OL_SEL["reading_pane"]}\')')
+    check = await evaluate(f"!!document.querySelector('{_OL_SEL['reading_pane']}')")
     if not check.get("result"):
         return {"error": "Reading pane did not appear after clicking email"}
     header = await evaluate(_JS_READ_HEADER)
@@ -324,11 +361,11 @@ async def _outlook_read_email(index: int) -> dict[str, Any]:
     b = body.get("result", {})
     return {
         "index": index,
-        "subject":   h.get("subject", ""),
-        "from":      h.get("from_", ""),
-        "to":        h.get("to_", ""),
-        "cc":        h.get("cc_", ""),
-        "date":      h.get("date_", ""),
+        "subject": h.get("subject", ""),
+        "from": h.get("from_", ""),
+        "to": h.get("to_", ""),
+        "cc": h.get("cc_", ""),
+        "date": h.get("date_", ""),
         "body_text": b.get("body_text", ""),
     }
 
@@ -339,132 +376,124 @@ async def _outlook_move_email(index: int, folder: str) -> dict[str, Any]:
 
     Strategy:
     1. Click email to open it in the reading pane.
-    2. Look for a Move toolbar button.
-    3. If not found, open the "More actions" (…) menu and look there.
-    4. As a last resort, right-click the email item for context menu.
-    5. In the resulting submenu / folder picker, click the matching folder.
+    2. Click "Move to" toolbar button → opens quick dropdown.
+    3. Click "Move to a different folder..." → opens modal dialog with full tree.
+    4. In the dialog, match level-2 treeitems by first-line folder name.
+       Uses coordinate-based clicks (required for React/Fluent UI tree selection).
+    5. Click the "Move" button to confirm.
     """
-    from cdp import evaluate
+    from cdp import click_at, evaluate
+
     login = await _outlook_ensure_mail()
     if "error" in login:
         return login
 
-    # Step 1: click the email to select it / open reading pane
+    # Step 1: click the email to select it
     await evaluate(f"""
         const el = document.querySelectorAll('{_OL_SEL["email_item"]}')[{index}];
         if (el) el.click();
     """)
+    await asyncio.sleep(2)
+
+    # Step 2: click "Move to" toolbar button
+    move_to = await evaluate("""
+    (function() {
+        const btn = document.querySelector('[aria-label="Move to"]');
+        if (btn) { btn.click(); return {ok: true}; }
+        return {ok: false};
+    })()
+    """)
+    if not (move_to.get("result") or {}).get("ok"):
+        return {"error": "Move to button not found", "index": index}
     await asyncio.sleep(1.5)
 
-    # Step 2: try the direct "Move to" toolbar button
-    found = await evaluate("""
+    # Step 3: click "Move to a different folder..." in the dropdown
+    different_folder = await evaluate("""
     (function() {
-        const candidates = [
-            '[aria-label="Move to"]',
-            '[aria-label="Move"]',
-            'button[title*="Move"]',
-        ];
-        for (const sel of candidates) {
-            const el = document.querySelector(sel);
-            if (el) { el.click(); return {ok: true, via: sel}; }
+        const items = document.querySelectorAll('button, [role="menuitem"]');
+        for (const el of items) {
+            if ((el.innerText || '').includes('Move to a different folder')) {
+                el.click();
+                return {ok: true};
+            }
         }
         return {ok: false};
     })()
     """)
+    if not (different_folder.get("result") or {}).get("ok"):
+        return {"error": "'Move to a different folder...' not found", "index": index}
+    await asyncio.sleep(2)
 
-    if not (found.get("result") or {}).get("ok"):
-        # Step 3: open the "More actions" (…) ellipsis menu
-        await evaluate("""
-        (function() {
-            const more = document.querySelector(
-                '[aria-label="More actions"], [aria-label="More email actions"], '
-                + '[aria-label="More commands"], button[title="More"]'
-            );
-            if (more) more.click();
-        })()
-        """)
-        await asyncio.sleep(0.8)
-
-        # Now look for Move inside the dropdown
-        found = await evaluate("""
-        (function() {
-            const items = Array.from(document.querySelectorAll('[role="menuitem"]'));
-            const btn = items.find(el => {
-                const t = (el.getAttribute('aria-label') || el.innerText || '').toLowerCase();
-                return t.includes('move') && !t.includes('sweep');
-            });
-            if (btn) { btn.click(); return {ok: true, via: 'more_menu'}; }
-            return {ok: false};
-        })()
-        """)
-
-    if not (found.get("result") or {}).get("ok"):
-        # Step 4: right-click context menu fallback
-        await evaluate(f"""
-        (function() {{
-            const el = document.querySelectorAll('{_OL_SEL["email_item"]}')[{index}];
-            if (el) el.dispatchEvent(new MouseEvent('contextmenu', {{bubbles: true, button: 2}}));
-        }})()
-        """)
-        await asyncio.sleep(0.8)
-        found = await evaluate("""
-        (function() {
-            const items = Array.from(document.querySelectorAll('[role="menuitem"]'));
-            const btn = items.find(el => {
-                const t = (el.getAttribute('aria-label') || el.innerText || '').toLowerCase();
-                return t.includes('move') && !t.includes('sweep');
-            });
-            if (btn) { btn.click(); return {ok: true, via: 'context_menu'}; }
-            return {ok: false};
-        })()
-        """)
-
-    if not (found.get("result") or {}).get("ok"):
-        return {"error": "Could not find a Move action for this email", "index": index}
-
-    await asyncio.sleep(1)
-
-    # Step 5: select the target folder from the picker / submenu
+    # Step 4: find the target folder in the dialog tree (level-2 items only)
     folder_lower = folder.lower()
     pick = await evaluate(f"""
     (function() {{
-        const selectors = '[role="menuitem"], [role="option"], [role="treeitem"], button';
-        const candidates = Array.from(document.querySelectorAll(selectors));
-        const btn = candidates.find(el => {{
-            const t = (
-                el.getAttribute('aria-label')
-                || el.getAttribute('title')
-                || el.innerText
-                || ''
-            ).trim().toLowerCase();
-            return t === '{folder_lower}' || t.startsWith('{folder_lower}');
-        }});
-        if (!btn) {{
-            const available = candidates
-                .map(e => (e.getAttribute('aria-label') || e.innerText || '').trim())
-                .filter(t => t && t.length < 60)
-                .slice(0, 25);
-            return {{ok: false, available}};
+        const dialog = document.querySelector('[role="dialog"]');
+        if (!dialog) return {{error: 'no dialog'}};
+        const items = dialog.querySelectorAll('[role="treeitem"][aria-level="2"]');
+        const available = [];
+        for (const el of items) {{
+            const div = el.querySelector('div');
+            if (!div) continue;
+            const text = (div.innerText || '').trim();
+            const lines = text.split('\\n').map(s => s.trim()).filter(s => s.length > 1);
+            const name = lines[0] || '';
+            if (name) available.push(name);
+            if (name.toLowerCase() === '{folder_lower}' || name.toLowerCase().startsWith('{folder_lower}')) {{
+                const rect = el.getBoundingClientRect();
+                return {{
+                    found: true, name,
+                    x: Math.round(rect.x + rect.width / 2),
+                    y: Math.round(rect.y + rect.height / 2),
+                }};
+            }}
         }}
-        btn.click();
-        return {{ok: true, matched: btn.getAttribute('aria-label') || btn.innerText}};
+        return {{found: false, available: available.slice(0, 25)}};
     }})()
     """)
 
     r = pick.get("result") or {}
-    if not r.get("ok"):
+    if not r.get("found"):
         return {
-            "error":     f"Folder '{folder}' not found in the move picker",
+            "error": f"Folder '{folder}' not found in the move picker",
             "available": r.get("available", []),
-            "index":     index,
+            "index": index,
         }
 
+    # Step 5: coordinate click on the folder (React requires real mouse events)
+    await click_at(r["x"], r["y"])
     await asyncio.sleep(1)
-    return {"status": "moved", "index": index, "folder": r.get("matched", folder)}
+
+    # Step 6: click the "Move" button via coordinates
+    move_btn = await evaluate("""
+    (function() {
+        const dialog = document.querySelector('[role="dialog"]');
+        if (!dialog) return {error: 'no dialog'};
+        const btn = Array.from(dialog.querySelectorAll('button'))
+            .find(b => (b.innerText || '').trim() === 'Move');
+        if (!btn) return {error: 'Move button not found'};
+        if (btn.disabled) return {error: 'Move button still disabled'};
+        const rect = btn.getBoundingClientRect();
+        return {
+            x: Math.round(rect.x + rect.width / 2),
+            y: Math.round(rect.y + rect.height / 2),
+        };
+    })()
+    """)
+
+    mr = move_btn.get("result") or {}
+    if "error" in mr:
+        return {"error": mr["error"], "index": index}
+
+    await click_at(mr["x"], mr["y"])
+    await asyncio.sleep(2)
+
+    return {"status": "moved", "index": index, "folder": r.get("name", folder)}
 
 
 async def _outlook_search_emails(query: str, limit: int = 10) -> dict[str, Any]:
     from cdp import click, evaluate, type_text
+
     login = await _outlook_ensure_mail()
     if "error" in login:
         return login
@@ -482,8 +511,11 @@ async def _outlook_search_emails(query: str, limit: int = 10) -> dict[str, Any]:
     return {"query": query, "emails": result.get("result", [])}
 
 
-async def _outlook_send_email(to: str, subject: str, body: str, cc: str = "") -> dict[str, Any]:
+async def _outlook_send_email(
+    to: str, subject: str, body: str, cc: str = ""
+) -> dict[str, Any]:
     from cdp import click, evaluate, type_text
+
     login = await _outlook_ensure_mail()
     if "error" in login:
         return login
@@ -528,6 +560,7 @@ async def _outlook_send_email(to: str, subject: str, body: str, cc: str = "") ->
 
 async def _outlook_reply_email(body: str, reply_all: bool = False) -> dict[str, Any]:
     from cdp import click, type_text
+
     sel = _OL_SEL["reply_all_button"] if reply_all else _OL_SEL["reply_button"]
     for s in sel.split(", "):
         result = await click(s.strip())
@@ -545,6 +578,7 @@ async def _outlook_reply_email(body: str, reply_all: bool = False) -> dict[str, 
 
 async def _outlook_forward_email(to: str, body: str = "") -> dict[str, Any]:
     from cdp import click, evaluate, type_text
+
     sel = _OL_SEL["forward_button"]
     for s in sel.split(", "):
         result = await click(s.strip())
@@ -607,7 +641,9 @@ async def _h_outlook_send_email(a: dict) -> dict:
 
 
 async def _h_outlook_reply_email(a: dict) -> dict:
-    return await _outlook_reply_email(body=a["body"], reply_all=a.get("reply_all", False))
+    return await _outlook_reply_email(
+        body=a["body"], reply_all=a.get("reply_all", False)
+    )
 
 
 async def _h_outlook_forward_email(a: dict) -> dict:
@@ -615,13 +651,13 @@ async def _h_outlook_forward_email(a: dict) -> dict:
 
 
 HANDLERS: dict = {
-    "outlook_list_emails":   _h_outlook_list_emails,
-    "outlook_list_unread":   _h_outlook_list_unread,
-    "outlook_list_folders":  _h_outlook_list_folders,
-    "outlook_read_email":    _h_outlook_read_email,
-    "outlook_move_email":    _h_outlook_move_email,
+    "outlook_list_emails": _h_outlook_list_emails,
+    "outlook_list_unread": _h_outlook_list_unread,
+    "outlook_list_folders": _h_outlook_list_folders,
+    "outlook_read_email": _h_outlook_read_email,
+    "outlook_move_email": _h_outlook_move_email,
     "outlook_search_emails": _h_outlook_search_emails,
-    "outlook_send_email":    _h_outlook_send_email,
-    "outlook_reply_email":   _h_outlook_reply_email,
+    "outlook_send_email": _h_outlook_send_email,
+    "outlook_reply_email": _h_outlook_reply_email,
     "outlook_forward_email": _h_outlook_forward_email,
 }
