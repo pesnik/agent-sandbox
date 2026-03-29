@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import socket
@@ -158,7 +159,9 @@ async def shell_execute(req: ShellExecuteRequest) -> dict[str, Any]:
 
 
 @app.get("/v1/files/read")
-async def files_read(path: str = Query(..., description="Absolute path to file")) -> dict[str, Any]:
+async def files_read(
+    path: str = Query(..., description="Absolute path to file"),
+) -> dict[str, Any]:
     """Read a file and return its content as a string."""
     try:
         async with aiofiles.open(path, "r", errors="replace") as f:
@@ -190,7 +193,9 @@ async def files_write(req: FileWriteRequest) -> dict[str, Any]:
 
 
 @app.get("/v1/files/list")
-async def files_list(path: str = Query(..., description="Directory path to list")) -> dict[str, Any]:
+async def files_list(
+    path: str = Query(..., description="Directory path to list"),
+) -> dict[str, Any]:
     """List entries in a directory."""
     try:
         entries_raw = await aiofiles.os.listdir(path)
@@ -222,7 +227,9 @@ async def files_list(path: str = Query(..., description="Directory path to list"
 
 
 @app.delete("/v1/files/delete")
-async def files_delete(path: str = Query(..., description="Path to file or empty dir to delete")) -> dict[str, Any]:
+async def files_delete(
+    path: str = Query(..., description="Path to file or empty dir to delete"),
+) -> dict[str, Any]:
     """Delete a file or empty directory."""
     try:
         st = await aiofiles.os.stat(path)
@@ -274,7 +281,9 @@ async def browser_click(req: BrowserClickRequest) -> dict[str, Any]:
             result = await cdp_click_at(req.x, req.y)
             return {"x": result["x"], "y": result["y"], "status": result["status"]}
         else:
-            raise HTTPException(status_code=400, detail="Provide 'selector' or 'x' and 'y'")
+            raise HTTPException(
+                status_code=400, detail="Provide 'selector' or 'x' and 'y'"
+            )
     except HTTPException:
         raise
     except Exception as exc:
@@ -301,5 +310,130 @@ async def browser_evaluate(req: BrowserEvaluateRequest) -> dict[str, Any]:
             "type": result.get("type", "undefined"),
             "status": result.get("status", "ok"),
         }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Google Messages
+# ---------------------------------------------------------------------------
+
+_GM_HOST = "messages.google.com"
+
+_JS_GM_GET_MESSAGES = """
+(function(limit) {
+    const items = document.querySelectorAll('mws-tombstone-message-wrapper, mws-message-wrapper');
+    const result = [];
+    let currentDate = '';
+
+    for (const item of items) {
+        if (item.nodeName === 'MWS-TOMBSTONE-MESSAGE-WRAPPER') {
+            const raw = (item.textContent || '').replace(/\\u00A0/g, ' ').trim();
+            if (raw) {
+                const parts = raw.split('\\u00B7').map(s => s.trim());
+                const dayPart = parts[0] || '';
+                if (dayPart && !dayPart.match(/^\\d{1,2}:\\d{2}/)) {
+                    currentDate = dayPart;
+                } else {
+                    currentDate = 'today';
+                }
+            }
+            continue;
+        }
+
+        const textEl = item.querySelector('.text-msg-content, [data-e2e-message-text-content]');
+        const text = textEl ? textEl.innerText.trim() : '';
+        if (!text) continue;
+
+        const absTs = item.querySelector('mws-absolute-timestamp');
+        const relTs = item.querySelector('mws-relative-timestamp, .timestamp');
+        const time = absTs ? absTs.textContent.trim() : (relTs ? relTs.innerText.trim() : '');
+
+        const isOutgoing = item.getAttribute('is-outgoing') === 'true';
+        const senderEl = item.querySelector('.sender-name, [data-e2e-sender-name]');
+        const sender = senderEl ? senderEl.innerText.trim() : (isOutgoing ? 'Me' : '');
+        const msgId = item.getAttribute('msg-id') || '';
+
+        result.push({text, time, date: currentDate, is_outgoing: isOutgoing, sender, msg_id: msgId});
+    }
+
+    return result.filter(m => !m.is_outgoing).slice(-limit);
+})(%d)
+"""
+
+_JS_SCROLL_UP = """(() => {
+    const container = document.querySelector('mws-bottom-anchored.container');
+    if (container) container.scrollTop = 0;
+    return document.querySelectorAll('mws-message-wrapper').length;
+})()"""
+
+_JS_FIND_CHAT = """
+(function(name) {
+    let items = document.querySelectorAll('mws-conversation-list-item');
+    if (!items.length) items = document.querySelectorAll('a[href*="conversations/"]');
+    const lower = name.toLowerCase();
+    for (const el of items) {
+        const nameEl = el.querySelector('.name, [data-e2e-conversation-name], h3') || {innerText: ''};
+        if (nameEl.innerText.trim().toLowerCase().includes(lower)) {
+            const rect = el.getBoundingClientRect();
+            return {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2};
+        }
+    }
+    return null;
+})(%s)
+"""
+
+
+class GoogleMessagesReadRequest(BaseModel):
+    chat: str
+    limit: int = 20
+
+
+@app.post("/v1/google-messages/read")
+async def google_messages_read(req: GoogleMessagesReadRequest) -> dict[str, Any]:
+    """Read messages from a Google Messages conversation.
+
+    Handles scrolling to load older messages when limit > 25.
+    Returns messages with date (tombstone day name) and time (absolute timestamp).
+    """
+    try:
+        # Navigate to Google Messages if not already there
+        url_result = await cdp_evaluate("window.location.href")
+        current = str(url_result.get("result", ""))
+        if _GM_HOST not in current:
+            await cdp_navigate(f"https://{_GM_HOST}/web/conversations")
+            await asyncio.sleep(5)
+
+        # Find and click the conversation
+        safe_name = json.dumps(req.chat.lower())
+        coords = await cdp_evaluate(_JS_FIND_CHAT % safe_name)
+        pos = coords.get("result")
+        if not pos:
+            raise HTTPException(
+                status_code=404, detail=f"Conversation '{req.chat}' not found"
+            )
+
+        await cdp_click_at(pos["x"], pos["y"])
+        await asyncio.sleep(2)
+
+        # Scroll up to load older messages
+        if req.limit > 25:
+            prev_count = 0
+            for _ in range(10):
+                scroll_result = await cdp_evaluate(_JS_SCROLL_UP)
+                current_count = scroll_result.get("result", 0) or 0
+                if current_count >= req.limit or current_count == prev_count:
+                    break
+                prev_count = current_count
+                await asyncio.sleep(2)
+
+        # Read messages
+        result = await cdp_evaluate(_JS_GM_GET_MESSAGES % req.limit)
+        messages = result.get("result") or []
+
+        return {"chat": req.chat, "messages": messages, "count": len(messages)}
+
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
