@@ -69,15 +69,17 @@ COPY api/requirements.txt /tmp/api-requirements.txt
 COPY mcp_server/requirements.txt /tmp/mcp-requirements.txt
 RUN pip3 install --no-cache-dir -r /tmp/api-requirements.txt -r /tmp/mcp-requirements.txt
 
-# Playwright Chromium — real arm64 binary, installed outside /root so the
-# volume mount on /root at runtime does not hide the binary.
+# Google Chrome Stable — proper branded browser for VNC desktop
+RUN wget -qO /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && \
+    apt-get update && apt-get install -y --no-install-recommends /tmp/google-chrome.deb && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/google-chrome.deb && \
+    echo "/usr/bin/google-chrome-stable" > /opt/chromium-path
+
+# Playwright — Python bindings only, no separate Chromium download needed
+# Chrome Stable is used for both VNC display and CDP automation.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN pip3 install --no-cache-dir playwright && \
-    playwright install chromium && \
     playwright install-deps chromium
-
-# Write Chromium path to a known location so supervisord can reference it
-RUN python3 -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); open('/opt/chromium-path','w').write(p.chromium.executable_path); p.stop()" && echo "Chromium at: $(cat /opt/chromium-path)"
 
 # Create required directories
 RUN mkdir -p \
