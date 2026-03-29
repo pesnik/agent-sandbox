@@ -39,7 +39,9 @@ async def _get_target_ws_url(
 ) -> str:
     """Return the WebSocket debugger URL for a page target.
 
-    If url_contains is given, prefer the first tab whose URL matches it.
+    If url_contains is given, prefer the best matching tab:
+    1. Exact root URL match (e.g. web.whatsapp.com/ not web.whatsapp.com/send)
+    2. First tab whose URL matches
     Falls back to pages[0] if no match found.
     """
     async with session.get(f"{CDP_URL}/json/list") as resp:
@@ -49,8 +51,20 @@ async def _get_target_ws_url(
     if not pages:
         raise RuntimeError("No page targets found in Chromium. Is it running?")
     if url_contains:
-        match = next((t for t in pages if url_contains in t.get("url", "")), None)
-        if match:
+        matches = [t for t in pages if url_contains in t.get("url", "")]
+        if matches:
+            # Prefer the tab closest to the root URL (fewest path segments)
+            # This avoids picking e.g. /send over the main page
+            def score(t):
+                url = t.get("url", "")
+                # Exact root match gets highest priority
+                from urllib.parse import urlparse
+
+                parsed = urlparse(url)
+                path_depth = len([p for p in parsed.path.split("/") if p])
+                return (path_depth, url)
+
+            match = min(matches, key=score)
             return match["webSocketDebuggerUrl"]
     return pages[0]["webSocketDebuggerUrl"]
 
@@ -94,7 +108,9 @@ class CDPSession:
         await self._ws.close()
 
 
-async def _open_session(url_contains: str | None = None) -> tuple[aiohttp.ClientSession, CDPSession]:
+async def _open_session(
+    url_contains: str | None = None,
+) -> tuple[aiohttp.ClientSession, CDPSession]:
     http = aiohttp.ClientSession()
     ws_url = await _get_target_ws_url(http, url_contains=url_contains)
     ws = await http.ws_connect(ws_url)
@@ -343,13 +359,26 @@ async def evaluate_in_tab(js: str, url_contains: str) -> dict[str, Any]:
     try:
         result = await cdp.send(
             "Runtime.evaluate",
-            {"expression": js, "returnByValue": True, "awaitPromise": True, "userGesture": True},
+            {
+                "expression": js,
+                "returnByValue": True,
+                "awaitPromise": True,
+                "userGesture": True,
+            },
         )
         rv = result.get("result", {})
         ex = result.get("exceptionDetails")
         if ex:
-            return {"status": "error", "type": "exception", "result": ex.get("text", "Unknown JS exception")}
-        return {"status": "ok", "type": rv.get("type", "undefined"), "result": rv.get("value")}
+            return {
+                "status": "error",
+                "type": "exception",
+                "result": ex.get("text", "Unknown JS exception"),
+            }
+        return {
+            "status": "ok",
+            "type": rv.get("type", "undefined"),
+            "result": rv.get("value"),
+        }
     finally:
         await cdp.close()
         await http.close()
@@ -370,13 +399,17 @@ async def navigate_in_tab(url: str, url_contains: str) -> dict[str, Any]:
         await http.close()
 
 
-async def type_text_in_tab(selector: str, text: str, url_contains: str) -> dict[str, Any]:
+async def type_text_in_tab(
+    selector: str, text: str, url_contains: str
+) -> dict[str, Any]:
     """Like type_text() but targets the tab whose URL contains url_contains."""
     http, cdp = await _open_session(url_contains=url_contains)
     try:
         doc = await cdp.send("DOM.getDocument", {"depth": 0})
         root_node_id = doc["root"]["nodeId"]
-        query = await cdp.send("DOM.querySelector", {"nodeId": root_node_id, "selector": selector})
+        query = await cdp.send(
+            "DOM.querySelector", {"nodeId": root_node_id, "selector": selector}
+        )
         node_id = query.get("nodeId", 0)
         if not node_id:
             return {"selector": selector, "chars_typed": 0, "status": "not_found"}
@@ -386,8 +419,14 @@ async def type_text_in_tab(selector: str, text: str, url_contains: str) -> dict[
         cy = (content[1] + content[5]) / 2
         await _dispatch_click(cdp, cx, cy)
         for char in text:
-            await cdp.send("Input.dispatchKeyEvent", {"type": "keyDown", "text": char, "unmodifiedText": char})
-            await cdp.send("Input.dispatchKeyEvent", {"type": "keyUp", "text": char, "unmodifiedText": char})
+            await cdp.send(
+                "Input.dispatchKeyEvent",
+                {"type": "keyDown", "text": char, "unmodifiedText": char},
+            )
+            await cdp.send(
+                "Input.dispatchKeyEvent",
+                {"type": "keyUp", "text": char, "unmodifiedText": char},
+            )
         return {"selector": selector, "chars_typed": len(text), "status": "ok"}
     finally:
         await cdp.close()

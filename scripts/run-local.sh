@@ -89,6 +89,18 @@ echo "  Chrome PID $CHROME_PID, log: /tmp/agent-sandbox-chrome.log"
 # Give Chrome time to open its debug socket
 sleep 2
 
+# Open service tabs (reuses sessions from make login)
+python3 -c "
+import json, urllib.request, time
+for url in ['https://web.whatsapp.com', 'https://messages.google.com/web/conversations', 'https://outlook.office.com/mail/inbox']:
+    req = urllib.request.Request('http://localhost:$CDP_PORT/json/new?' + url, method='PUT')
+    try:
+        urllib.request.urlopen(req, timeout=10)
+    except: pass
+    time.sleep(2)
+" 2>/dev/null || true
+sleep 3
+
 # ---------------------------------------------------------------------------
 # REST API (uvicorn, port $API_PORT)
 # ---------------------------------------------------------------------------
