@@ -184,7 +184,7 @@ Nine tools for Outlook Web (`outlook.office.com`) running in the persistent brow
 
 `outlook_list_folders` reads `[role="treeitem"]` elements from Outlook's nav tree. The innerText format is `"\uXXXX\nFolderName"` (unicode icon + newline + name) — line-filtering is applied to extract the name.
 
-`outlook_move_email` strategy: (1) dismiss any open Fluent UI overlay via JS Escape dispatch; (2) JS `.click()` on the email item (bypasses pointer-event interception from overlays); (3) click `button[aria-label="Move to a different folder..."]`; (4) match folder in the picker by name.
+`outlook_move_email` strategy: (1) click "Move to" toolbar button; (2) click "Move to a different folder..." to open the full tree picker dialog; (3) use coordinate-based click (`Input.dispatchMouseEvent` via CDP) on the matching `[role="treeitem"][aria-level="2"]` — JS `.click()` doesn't trigger React/Fluent UI handlers; (4) coordinate-click the "Move" button to confirm. The folder is matched by first-line text of the treeitem's inner DIV (after unicode icon chars).
 
 ## Google Messages MCP tools
 
@@ -203,9 +203,48 @@ Requires one-time QR pairing via VNC — session persists across runs.
 For `google_messages_send_message`: existing contacts are opened by name; phone numbers
 trigger the "Start chat" FAB flow to initiate a new SMS conversation.
 
+### Timestamp extraction
+
+`google_messages_read_chat` returns each message with:
+- `date` — day name from tombstone separator (e.g. `"Saturday"`, `"Monday"`, `"today"`)
+- `time` — absolute timestamp from `mws-absolute-timestamp` (e.g. `"2:35 AM"`)
+
+Google Messages uses `mws-tombstone-message-wrapper` elements as date separators between
+message groups. Format: `"Monday \u00B7 2:35 AM"` (day name + middle dot + time). Time-only
+tombstones like `"12:30 AM"` indicate today's messages.
+
+Source: [google-messages-web-export](https://codeberg.org/prooma/google-messages-web-export)
+
+### Scroll-to-load
+
+When `limit > 25`, the tool scrolls `mws-bottom-anchored.container` to top repeatedly
+until enough messages are loaded or no new messages appear. Google Messages uses virtual
+scrolling — only visible messages are in the DOM.
+
+### REST API equivalent
+
+The same capability is available via `POST /v1/google-messages/read`:
+
+```json
+POST /v1/google-messages/read
+{"chat": "EDW_INFO", "limit": 200}
+```
+
+Response:
+```json
+{
+  "chat": "EDW_INFO",
+  "count": 150,
+  "messages": [
+    {"text": "...", "time": "6:22 AM", "date": "Sunday", "is_outgoing": false, "sender": "", "msg_id": "71684"},
+    ...
+  ]
+}
+```
+
 DOM selectors used: `mws-conversation-list-item` for the sidebar,
-`mws-message-wrapper` for message bubbles, `[data-e2e-send-button]` for send —
-matching the same elements used by the Playwright-based `GoogleMessagesService`.
+`mws-message-wrapper` for message bubbles, `mws-tombstone-message-wrapper` for date
+separators, `mws-absolute-timestamp` for time, `[data-e2e-send-button]` for send.
 
 ## WhatsApp MCP tools
 
@@ -242,6 +281,19 @@ The click endpoint accepts either a CSS selector or absolute viewport coordinate
 Implemented via `cdp.click(selector)` and `cdp.click_at(x, y)` respectively.
 Coordinates map directly to `Input.dispatchMouseEvent` — no DOM query needed.
 
+## `/v1/google-messages/read` — read messages with timestamps
+
+Dedicated endpoint for reading Google Messages conversations. Handles conversation
+opening, scroll-to-load, and timestamp extraction in a single call.
+
+```json
+POST /v1/google-messages/read
+{"chat": "EDW_INFO", "limit": 200}
+```
+
+Returns messages with `text`, `time` (absolute), `date` (tombstone day name),
+`is_outgoing`, `sender`, and `msg_id`. See Google Messages MCP tools section for details.
+
 ## Common failure modes
 
 | Symptom | Cause | Fix |
@@ -258,7 +310,10 @@ Coordinates map directly to `Input.dispatchMouseEvent` — no DOM query needed.
 | `make login` blocked | Headless Chrome using same data dir | Run `make stop` first, then `make login` |
 | Outlook move picker shows icon chars only | `[role="treeitem"]` innerText is `"\uXXXX\nName"` | Filter lines: skip single chars, digits, status words; take first valid line |
 | Outlook move click intercepted | Fluent UI `fluent-default-layer-host` overlay on top | Dispatch Escape via JS first; use JS `.click()` not Playwright pointer click |
+| Outlook move: Move button stays disabled | JS `.click()` on treeitem doesn't trigger React handler | Use coordinate-based click via `Input.dispatchMouseEvent` (CDP `mousePressed`/`mouseReleased`) |
 | Google Messages returns only 1 result | Page not fully loaded | `navigate_in_tab` + extra `asyncio.sleep(8)` on first open |
+| Google Messages timestamps empty | Relative timestamps shown by default | Read `mws-absolute-timestamp` elements; click messages to reveal absolute time |
+| Google Messages few messages loaded | Virtual scrolling only renders visible | Scroll `mws-bottom-anchored.container` to top repeatedly until count stabilizes |
 | `PIDS[-1]` bad array subscript | macOS ships bash 3.2 (no negative indices) | Use named variable `PID=$!` instead |
 
 ## Adding a new always-on service
