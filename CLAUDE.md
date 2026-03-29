@@ -22,6 +22,12 @@ core/                        # Single Docker image (Ubuntu 22.04)
     manifest.json            # Manifest V3, content_script, world: MAIN
     stealth.js               # Removes navigator.webdriver, spoofs plugins/mimeTypes
 
+sdk/                         # Zero-dependency Python SDK for the REST API
+  client.py                  # SandboxClient — browser / shell / files / status
+  __init__.py
+  pyproject.toml             # pip install ./sdk
+  README.md
+
 docker-compose.yml           # Main compose file (sandbox service)
 docker-compose.android.yml   # Optional Android 13 sidecar
 tests/e2e.py                 # 37 e2e tests — run against a live container
@@ -68,6 +74,58 @@ python tests/e2e.py
 ```
 
 Tests cover: status, shell (9), files (10), browser/CDP (7), MCP (2), concurrency (2), security/edge cases (6).
+
+## Python SDK (sdk/)
+
+The `sdk/` directory ships a zero-dependency Python client that wraps the REST API.
+No pip installs needed beyond stdlib — or `pip install ./sdk` for package use.
+
+```python
+from sdk.client import SandboxClient
+
+c = SandboxClient()  # reads SANDBOX_BASE_URL env, defaults to http://localhost:8091
+
+c.browser.navigate_if_needed("https://web.whatsapp.com")  # skips if already there
+c.browser.click(selector="button.submit")
+c.browser.click(x=640, y=400)                             # coordinate click
+c.browser.type(selector="input", text="hello")
+c.browser.press_key("Enter")
+shot = c.browser.screenshot()
+shot.save("screen.png")
+print(c.browser.get_text())
+
+r = c.shell.execute("ls /root")
+print(r.stdout, r.exit_code)
+
+c.files.write("/root/out.txt", "hello")
+print(c.files.read("/root/out.txt"))
+```
+
+**Key methods:**
+
+| Sub-client | Useful methods |
+|------------|---------------|
+| `browser` | `navigate(url)`, `navigate_if_needed(url)`, `click(selector=\|x=,y=)`, `type`, `press_key`, `screenshot`, `evaluate`, `get_text`, `get_url`, `get_title` |
+| `shell` | `execute(cmd, cwd, timeout)` → `ShellResult` |
+| `files` | `read`, `write`, `list`, `delete` |
+| `status` | `get()`, `is_ready()` |
+
+**`navigate_if_needed` design note.** The sandbox browser is persistent (VNC session).
+Calling `navigate()` unconditionally reloads the page and destroys live state (e.g. a
+WhatsApp login session). `navigate_if_needed` checks `window.location.href` first and
+only issues `Page.navigate` when the current URL doesn't already match.
+
+## `/v1/browser/click` — selector or coordinates
+
+The click endpoint accepts either a CSS selector or absolute viewport coordinates:
+
+```json
+{ "selector": "button.submit" }
+{ "x": 640, "y": 400 }
+```
+
+Implemented via `cdp.click(selector)` and `cdp.click_at(x, y)` respectively.
+Coordinates map directly to `Input.dispatchMouseEvent` — no DOM query needed.
 
 ## Common failure modes
 
