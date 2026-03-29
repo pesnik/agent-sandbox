@@ -42,6 +42,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation \
     # Locale
     locales \
+    # envsubst (for nginx template rendering at startup)
+    gettext-base \
     && locale-gen en_US.UTF-8 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
