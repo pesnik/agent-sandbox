@@ -730,15 +730,31 @@ _JS_WA_LIST_CHATS = """
 # JS: extract messages from the open chat panel
 _JS_WA_READ_MESSAGES = """
 (function(limit) {
-    const msgs = document.querySelectorAll('[data-pre-plain-text]');
-    return Array.from(msgs).slice(-limit).map(el => {
-        const meta = el.getAttribute('data-pre-plain-text') || '';
-        const match = meta.match(/\\[([^\\]]+)\\]\\s*([^:]+):\\s*/);
-        const time   = match ? match[1].trim() : '';
-        const sender = match ? match[2].trim() : '';
-        const textEl = el.querySelector('.copyable-text');
-        const text   = textEl ? textEl.innerText.trim() : el.innerText.trim();
-        return {time, sender, text};
+    // Try data-pre-plain-text first (group messages with sender info)
+    const withMeta = document.querySelectorAll('[data-pre-plain-text]');
+    if (withMeta.length > 0) {
+        return Array.from(withMeta).slice(-limit).map(el => {
+            const meta = el.getAttribute('data-pre-plain-text') || '';
+            const match = meta.match(/\\[([^\\]]+)\\]\\s*([^:]+):\\s*/);
+            const time   = match ? match[1].trim() : '';
+            const sender = match ? match[2].trim() : '';
+            const textEl = el.querySelector('.copyable-text');
+            const text   = textEl ? textEl.innerText.trim() : el.innerText.trim();
+            return {time, sender, text};
+        }).filter(m => m.text);
+    }
+    // Fallback: grab all message bubbles (1:1 chats — no sender metadata)
+    const bubbles = document.querySelectorAll('.message-in .copyable-text, .message-out .copyable-text');
+    return Array.from(bubbles).slice(-limit).map(el => {
+        const row = el.closest('.message-in, .message-out');
+        const direction = row && row.classList.contains('message-out') ? 'You' : 'Them';
+        const timeEl = row && row.querySelector('[data-pre-plain-text]');
+        const timeMeta = timeEl ? timeEl.getAttribute('data-pre-plain-text') : '';
+        const timeMatch = timeMeta.match(/\\[([^\\]]+)\\]/);
+        // also try the timestamp span inside the bubble
+        const tsEl = row && row.querySelector('span[class*="time"], span._ahhn');
+        const time = (timeMatch && timeMatch[1]) || (tsEl && tsEl.innerText.trim()) || '';
+        return {time, sender: direction, text: el.innerText.trim()};
     }).filter(m => m.text);
 })(%d)
 """
@@ -750,16 +766,19 @@ def _is_phone(value: str) -> bool:
     return stripped.isdigit() and len(stripped) >= 7
 
 
+_WA_URL = "web.whatsapp.com"
+
+
 async def _whatsapp_ensure_open() -> dict[str, Any]:
     """Ensure WhatsApp Web is open and logged in. navigate_if_needed style."""
-    from cdp import evaluate, navigate
-    url_result = await evaluate("window.location.href")
+    from cdp import evaluate_in_tab, navigate_in_tab
+    url_result = await evaluate_in_tab("window.location.href", _WA_URL)
     current = str(url_result.get("result", ""))
     if "web.whatsapp.com" not in current:
-        await navigate("https://web.whatsapp.com")
+        await navigate_in_tab("https://web.whatsapp.com", _WA_URL)
         await asyncio.sleep(6)
     # Confirm sidebar is present (logged in)
-    check = await evaluate('!!document.querySelector("#pane-side")')
+    check = await evaluate_in_tab('!!document.querySelector("#pane-side")', _WA_URL)
     if not check.get("result"):
         return {"error": "WhatsApp not logged in. Open VNC (port 6080) and scan the QR code."}
     return {"status": "ok"}
@@ -767,78 +786,94 @@ async def _whatsapp_ensure_open() -> dict[str, Any]:
 
 async def _whatsapp_open_chat(chat: str) -> dict[str, Any]:
     """Open a specific chat by name or phone number."""
-    from cdp import evaluate, navigate
+    from cdp import evaluate_in_tab, navigate_in_tab
     if _is_phone(chat):
         phone = chat.lstrip("+").replace(" ", "").replace("-", "")
         login = await _whatsapp_ensure_open()
         if "error" in login:
             return login
-        await navigate(f"https://web.whatsapp.com/send?phone={phone}")
+        await navigate_in_tab(f"https://web.whatsapp.com/send?phone={phone}", _WA_URL)
         await asyncio.sleep(6)
         # Confirm input box appeared (chat opened)
-        check = await evaluate(f'!!document.querySelector(\'{_WA_INPUT_SEL}\')')
+        check = await evaluate_in_tab(f'!!document.querySelector(\'{_WA_INPUT_SEL}\')', _WA_URL)
         if not check.get("result"):
             return {"error": f"Could not open chat for phone {chat}. Number may not be on WhatsApp."}
     else:
         login = await _whatsapp_ensure_open()
         if "error" in login:
             return login
-        result = await evaluate(f"""
+        # Get the bounding box of the matching sidebar item and click via CDP mouse event
+        coords = await evaluate_in_tab(f"""
         (() => {{
-            const el = document.querySelector('span[title="{chat}"]');
-            if (!el) return 'NOT_FOUND';
-            const parent = el.closest('[role="listitem"]') || el.parentElement;
-            if (parent) {{ parent.click(); return 'CLICKED'; }}
-            return 'NO_PARENT';
+            const query = {json.dumps(chat.lower())};
+            const all = document.querySelectorAll('#pane-side span[title]');
+            let el = null;
+            for (const s of all) {{
+                if ((s.getAttribute('title') || '').toLowerCase().includes(query)) {{
+                    el = s; break;
+                }}
+            }}
+            if (!el) return null;
+            const row = el.closest('[role="listitem"]') || el.parentElement;
+            const rect = (row || el).getBoundingClientRect();
+            return {{x: rect.left + rect.width / 2, y: rect.top + rect.height / 2}};
         }})()
-        """)
-        val = result.get("result", "")
-        if val == "NOT_FOUND":
+        """, _WA_URL)
+        pos = coords.get("result")
+        if not pos:
             return {"error": f"Chat '{chat}' not found in sidebar. Scroll or search manually first."}
-        await asyncio.sleep(2)
+        # Use real CDP mouse event — JS .click() doesn't reliably trigger React handlers
+        from cdp import _open_session, _dispatch_click
+        http, cdp = await _open_session(url_contains=_WA_URL)
+        try:
+            await _dispatch_click(cdp, pos["x"], pos["y"])
+        finally:
+            await cdp.close()
+            await http.close()
+        await asyncio.sleep(3)
     return {"status": "ok"}
 
 
 async def _whatsapp_list_chats(limit: int = 20) -> dict[str, Any]:
-    from cdp import evaluate
+    from cdp import evaluate_in_tab
     login = await _whatsapp_ensure_open()
     if "error" in login:
         return login
-    result = await evaluate(_JS_WA_LIST_CHATS % limit)
+    result = await evaluate_in_tab(_JS_WA_LIST_CHATS % limit, _WA_URL)
     chats = result.get("result") or []
     return {"chats": chats, "count": len(chats)}
 
 
 async def _whatsapp_read_chat(chat: str, limit: int = 20) -> dict[str, Any]:
-    from cdp import evaluate
+    from cdp import evaluate_in_tab
     opened = await _whatsapp_open_chat(chat)
     if "error" in opened:
         return opened
-    await asyncio.sleep(1)
-    result = await evaluate(_JS_WA_READ_MESSAGES % limit)
+    await asyncio.sleep(3)
+    result = await evaluate_in_tab(_JS_WA_READ_MESSAGES % limit, _WA_URL)
     messages = result.get("result") or []
     return {"chat": chat, "messages": messages, "count": len(messages)}
 
 
 async def _whatsapp_send_message(to: str, message: str) -> dict[str, Any]:
-    from cdp import evaluate, type_text
+    from cdp import evaluate_in_tab, type_text_in_tab
     opened = await _whatsapp_open_chat(to)
     if "error" in opened:
         return opened
     # Focus and type
-    await evaluate(f'document.querySelector(\'{_WA_INPUT_SEL}\')?.focus()')
+    await evaluate_in_tab(f'document.querySelector(\'{_WA_INPUT_SEL}\')?.focus()', _WA_URL)
     await asyncio.sleep(0.5)
-    await type_text(_WA_INPUT_SEL, message)
+    await type_text_in_tab(_WA_INPUT_SEL, message, _WA_URL)
     await asyncio.sleep(0.5)
     # Send with Enter keydown
-    await evaluate(f"""
+    await evaluate_in_tab(f"""
     (() => {{
         const el = document.querySelector('{_WA_INPUT_SEL}');
         if (el) el.dispatchEvent(new KeyboardEvent('keydown', {{
             key: 'Enter', keyCode: 13, bubbles: true, cancelable: true
         }}));
     }})()
-    """)
+    """, _WA_URL)
     await asyncio.sleep(2)
     return {"status": "sent", "to": to, "message": message}
 
