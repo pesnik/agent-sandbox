@@ -98,7 +98,7 @@ COPY supervisord/conf.d/chromium.conf /etc/supervisor/conf.d/chromium.conf
 
 # Copy nginx configuration
 COPY nginx/nginx.conf       /etc/nginx/nginx.conf
-COPY nginx/conf.d/default.conf /etc/nginx/conf.d/default.conf
+COPY nginx/conf.d/default.conf.tpl /etc/nginx/conf.d/default.conf.tpl
 
 # Copy API, MCP server, and stealth extension
 COPY api/ /opt/sandbox/api/

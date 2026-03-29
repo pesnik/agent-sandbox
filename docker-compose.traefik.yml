@@ -1,0 +1,97 @@
+version: "3.9"
+
+# ---------------------------------------------------------------------------
+# Traefik multi-instance compose — two sandboxes behind a shared Traefik
+#
+# Usage:
+#   docker compose -f docker-compose.traefik.yml up -d --build
+#
+# Access:
+#   https://your.domain.com/team1-sandbox/
+#   https://your.domain.com/team2-sandbox/
+#
+# Requires traefik_default network to exist (created by your Traefik stack).
+# Set DOMAIN, TEAM1_*, TEAM2_* variables in your .env file.
+# ---------------------------------------------------------------------------
+
+services:
+
+  # ── Team 1 sandbox ────────────────────────────────────────────────────────
+  sandbox-team1:
+    build:
+      context: ./core
+      dockerfile: Dockerfile
+    image: agent-sandbox-core:latest
+    container_name: agent-sandbox-team1
+    environment:
+      - BASE_PATH=/${TEAM1_SLUG:-team1-sandbox}
+      - VNC_PASSWORD=${TEAM1_VNC_PASSWORD:-sandbox}
+      - DISPLAY=:1
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./modules:/sandbox/modules:ro
+      - sandbox-home-team1:/root
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - default
+      - traefik_default
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_default"
+      - "traefik.http.routers.team1-sandbox.rule=Host(`${DOMAIN:-your.domain.com}`) && PathPrefix(`/${TEAM1_SLUG:-team1-sandbox}`)"
+      - "traefik.http.routers.team1-sandbox.entrypoints=websecure"
+      - "traefik.http.routers.team1-sandbox.tls=true"
+      - "traefik.http.routers.team1-sandbox.tls.certresolver=letsencrypt"
+      - "traefik.http.services.team1-sandbox.loadbalancer.server.port=8080"
+
+  # ── Team 2 sandbox ────────────────────────────────────────────────────────
+  sandbox-team2:
+    build:
+      context: ./core
+      dockerfile: Dockerfile
+    image: agent-sandbox-core:latest
+    container_name: agent-sandbox-team2
+    environment:
+      - BASE_PATH=/${TEAM2_SLUG:-team2-sandbox}
+      - VNC_PASSWORD=${TEAM2_VNC_PASSWORD:-sandbox}
+      - DISPLAY=:1
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./modules:/sandbox/modules:ro
+      - sandbox-home-team2:/root
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - default
+      - traefik_default
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_default"
+      - "traefik.http.routers.team2-sandbox.rule=Host(`${DOMAIN:-your.domain.com}`) && PathPrefix(`/${TEAM2_SLUG:-team2-sandbox}`)"
+      - "traefik.http.routers.team2-sandbox.entrypoints=websecure"
+      - "traefik.http.routers.team2-sandbox.tls=true"
+      - "traefik.http.routers.team2-sandbox.tls.certresolver=letsencrypt"
+      - "traefik.http.services.team2-sandbox.loadbalancer.server.port=8080"
+
+volumes:
+  sandbox-home-team1:
+    name: agent-sandbox-home-team1
+  sandbox-home-team2:
+    name: agent-sandbox-home-team2
+
+networks:
+  default:
+    name: agent-sandbox-traefik-net
+  traefik_default:
+    external: true
