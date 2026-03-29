@@ -883,6 +883,7 @@ async def _whatsapp_send_message(to: str, message: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _GM_URL = "https://messages.google.com/web/conversations"
+_GM_HOST = "messages.google.com"
 
 _JS_GM_LIST_CHATS = """
 (function(limit) {
@@ -927,14 +928,15 @@ _GM_SEND_SEL = '[data-e2e-send-button], button[aria-label*="Send" i], [aria-labe
 
 async def _google_messages_ensure_open() -> dict[str, Any]:
     """Ensure messages.google.com is open and paired."""
-    from cdp import evaluate, navigate
-    url_result = await evaluate("window.location.href")
+    from cdp import evaluate_in_tab, navigate_in_tab
+    url_result = await evaluate_in_tab("window.location.href", _GM_HOST)
     current = str(url_result.get("result", ""))
     if "messages.google.com" not in current:
-        await navigate(_GM_URL)
+        await navigate_in_tab(_GM_URL, _GM_HOST)
         await asyncio.sleep(5)
-    check = await evaluate(
-        '!!document.querySelector("mws-conversations-list, mws-conversation-list-item, a[href*=\'conversations/\']")'
+    check = await evaluate_in_tab(
+        '!!document.querySelector("mws-conversations-list, mws-conversation-list-item, a[href*=\'conversations/\']")',
+        _GM_HOST,
     )
     if not check.get("result"):
         return {"error": "Google Messages not paired. Open VNC (port 6080) and scan the QR code."}
@@ -942,78 +944,85 @@ async def _google_messages_ensure_open() -> dict[str, Any]:
 
 
 async def _google_messages_list_chats(limit: int = 20) -> dict[str, Any]:
-    from cdp import evaluate
+    from cdp import evaluate_in_tab
     login = await _google_messages_ensure_open()
     if "error" in login:
         return login
     await asyncio.sleep(1)
-    result = await evaluate(_JS_GM_LIST_CHATS % limit)
+    result = await evaluate_in_tab(_JS_GM_LIST_CHATS % limit, _GM_HOST)
     chats = result.get("result") or []
     return {"chats": chats, "count": len(chats)}
 
 
 async def _google_messages_open_chat(chat: str) -> dict[str, Any]:
     """Open a conversation by name (partial match) or index."""
-    from cdp import evaluate
+    from cdp import evaluate_in_tab, _open_session, _dispatch_click
     login = await _google_messages_ensure_open()
     if "error" in login:
         return login
 
-    # If chat is numeric treat as index
+    # Get bounding box of the target item and click via real CDP mouse event
     if chat.isdigit():
-        js = f"""
+        coords_js = f"""
         (() => {{
             let items = document.querySelectorAll('mws-conversation-list-item');
             if (!items.length) items = document.querySelectorAll('a[href*="conversations/"]');
             const el = items[{int(chat)}];
-            if (!el) return 'NOT_FOUND';
-            el.click(); return 'CLICKED';
+            if (!el) return null;
+            const rect = el.getBoundingClientRect();
+            return {{x: rect.left + rect.width / 2, y: rect.top + rect.height / 2}};
         }})()
         """
     else:
-        safe = chat.replace('"', '\\"').replace("'", "\\'")
-        js = f"""
+        safe = json.dumps(chat.lower())
+        coords_js = f"""
         (() => {{
             let items = document.querySelectorAll('mws-conversation-list-item');
             if (!items.length) items = document.querySelectorAll('a[href*="conversations/"]');
-            const lower = '{safe}'.toLowerCase();
+            const lower = {safe};
             for (const el of items) {{
                 const nameEl = el.querySelector('.name, [data-e2e-conversation-name], h3') || {{innerText: ''}};
                 if (nameEl.innerText.trim().toLowerCase().includes(lower)) {{
-                    el.click(); return 'CLICKED';
+                    const rect = el.getBoundingClientRect();
+                    return {{x: rect.left + rect.width / 2, y: rect.top + rect.height / 2}};
                 }}
             }}
-            return 'NOT_FOUND';
+            return null;
         }})()
         """
 
-    result = await evaluate(js)
-    val = result.get("result", "")
-    if val == "NOT_FOUND":
+    coords = await evaluate_in_tab(coords_js, _GM_HOST)
+    pos = coords.get("result")
+    if not pos:
         return {"error": f"Conversation '{chat}' not found in Google Messages."}
-    await asyncio.sleep(1.5)
+    http, cdp = await _open_session(url_contains=_GM_HOST)
+    try:
+        await _dispatch_click(cdp, pos["x"], pos["y"])
+    finally:
+        await cdp.close()
+        await http.close()
+    await asyncio.sleep(2)
     return {"status": "ok"}
 
 
 async def _google_messages_read_chat(chat: str, limit: int = 20) -> dict[str, Any]:
-    from cdp import evaluate
+    from cdp import evaluate_in_tab
     opened = await _google_messages_open_chat(chat)
     if "error" in opened:
         return opened
-    await asyncio.sleep(1)
-    result = await evaluate(_JS_GM_GET_MESSAGES % limit)
+    await asyncio.sleep(2)
+    result = await evaluate_in_tab(_JS_GM_GET_MESSAGES % limit, _GM_HOST)
     messages = result.get("result") or []
     return {"chat": chat, "messages": messages, "count": len(messages)}
 
 
 async def _google_messages_send_message(to: str, message: str) -> dict[str, Any]:
-    from cdp import evaluate, type_text, navigate
+    from cdp import evaluate_in_tab, type_text_in_tab
 
     login = await _google_messages_ensure_open()
     if "error" in login:
         return login
 
-    # Determine whether to open existing chat or start a new one
     is_phone = to.lstrip("+").replace(" ", "").replace("-", "").isdigit() and len(to.lstrip("+").replace(" ", "").replace("-", "")) >= 7
 
     if is_phone:
@@ -1025,7 +1034,7 @@ async def _google_messages_send_message(to: str, message: str) -> dict[str, Any]
             fab.click(); return 'CLICKED';
         })()
         """
-        fab_result = await evaluate(fab_js)
+        fab_result = await evaluate_in_tab(fab_js, _GM_HOST)
         if fab_result.get("result") == "NOT_FOUND":
             return {"error": "Could not find 'Start chat' button in Google Messages."}
         await asyncio.sleep(1)
@@ -1040,25 +1049,23 @@ async def _google_messages_send_message(to: str, message: str) -> dict[str, Any]
         ]
         typed = False
         for sel in input_selectors:
-            res = await evaluate(f'!!document.querySelector("{sel}")')
+            res = await evaluate_in_tab(f'!!document.querySelector("{sel}")', _GM_HOST)
             if res.get("result"):
-                await type_text(sel, to)
+                await type_text_in_tab(sel, to, _GM_HOST)
                 typed = True
                 break
         if not typed:
             return {"error": "Could not find recipient input in Google Messages."}
 
         await asyncio.sleep(1.5)
-        # Press Enter to confirm the number
-        await evaluate("""
+        await evaluate_in_tab("""
         (() => {
             const el = document.activeElement || document.body;
             el.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', keyCode:13, bubbles:true}));
         })()
-        """)
+        """, _GM_HOST)
         await asyncio.sleep(1.5)
     else:
-        # Open existing conversation by name
         opened = await _google_messages_open_chat(to)
         if "error" in opened:
             return opened
@@ -1066,9 +1073,9 @@ async def _google_messages_send_message(to: str, message: str) -> dict[str, Any]
     # Type the message into the compose field
     compose_found = False
     for sel in _GM_COMPOSE_SEL.split(", "):
-        res = await evaluate(f'!!document.querySelector("{sel}")')
+        res = await evaluate_in_tab(f'!!document.querySelector("{sel}")', _GM_HOST)
         if res.get("result"):
-            await type_text(sel, message)
+            await type_text_in_tab(sel, message, _GM_HOST)
             compose_found = True
             break
     if not compose_found:
@@ -1079,18 +1086,18 @@ async def _google_messages_send_message(to: str, message: str) -> dict[str, Any]
     # Click Send button, fallback to Enter
     send_clicked = False
     for sel in _GM_SEND_SEL.split(", "):
-        res = await evaluate(f'!!document.querySelector("{sel}")')
+        res = await evaluate_in_tab(f'!!document.querySelector("{sel}")', _GM_HOST)
         if res.get("result"):
-            await evaluate(f'document.querySelector("{sel}").click()')
+            await evaluate_in_tab(f'document.querySelector("{sel}").click()', _GM_HOST)
             send_clicked = True
             break
     if not send_clicked:
-        await evaluate("""
+        await evaluate_in_tab("""
         (() => {
             const el = document.activeElement || document.body;
             el.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', keyCode:13, bubbles:true}));
         })()
-        """)
+        """, _GM_HOST)
 
     await asyncio.sleep(1)
     return {"status": "sent", "to": to, "message": message}
