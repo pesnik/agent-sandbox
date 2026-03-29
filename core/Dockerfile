@@ -54,6 +54,10 @@ RUN wget -qO /tmp/novnc.tar.gz \
     ln -sf /opt/novnc/vnc.html /opt/novnc/index.html && \
     rm /tmp/novnc.tar.gz
 
+# Clipboard sync — inject script into vnc.html before </head>
+COPY clipboard-sync.js /opt/novnc/app/clipboard-sync.js
+RUN sed -i 's|</head>|<script type="module" src="app/clipboard-sync.js"></script>\n</head>|' /opt/novnc/vnc.html
+
 # xdotool for X input automation
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xdotool \
