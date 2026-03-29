@@ -1,4 +1,5 @@
 """Google Messages Web tools: list chats, read chat, send message."""
+
 from __future__ import annotations
 
 import asyncio
@@ -15,11 +16,11 @@ _GM_URL = "https://messages.google.com/web/conversations"
 _GM_HOST = "messages.google.com"
 _GM_COMPOSE_SEL = (
     '[contenteditable="true"][aria-label*="message" i], '
-    '[data-e2e-message-input-field], '
-    'mws-autosize-textarea textarea'
+    "[data-e2e-message-input-field], "
+    "mws-autosize-textarea textarea"
 )
 _GM_SEND_SEL = (
-    '[data-e2e-send-button], '
+    "[data-e2e-send-button], "
     'button[aria-label*="Send" i], '
     '[aria-label="Send SMS message" i]'
 )
@@ -44,20 +45,48 @@ _JS_GM_LIST_CHATS = """
 
 _JS_GM_GET_MESSAGES = """
 (function(limit) {
-    let wrappers = document.querySelectorAll('mws-message-wrapper');
-    if (!wrappers.length) wrappers = document.querySelectorAll('[data-e2e-message-wrapper]');
-    return Array.from(wrappers).slice(-limit).map(el => {
-        const textEl = el.querySelector('.text-msg-content, [data-e2e-message-text-content]');
+    // Read all items including tombstone date separators
+    const items = document.querySelectorAll('mws-tombstone-message-wrapper, mws-message-wrapper');
+    const result = [];
+    let currentDate = '';
+
+    for (const item of items) {
+        if (item.nodeName === 'MWS-TOMBSTONE-MESSAGE-WRAPPER') {
+            // Tombstone = date separator. Format: "Monday \u00b7 2:35 AM" or "2:35 AM"
+            const raw = (item.textContent || '').replace(/\\u00A0/g, ' ').trim();
+            if (raw) {
+                const parts = raw.split('\\u00B7').map(s => s.trim());
+                const dayPart = parts[0] || '';
+                if (dayPart && !dayPart.match(/^\\d{1,2}:\\d{2}/)) {
+                    // Has a day name like "Saturday"
+                    currentDate = dayPart;
+                } else {
+                    // Time-only tombstone = today
+                    currentDate = 'today';
+                }
+            }
+            continue;
+        }
+
+        const textEl = item.querySelector('.text-msg-content, [data-e2e-message-text-content]');
         const text = textEl ? textEl.innerText.trim() : '';
-        const tsEl = el.querySelector('mws-relative-timestamp, .timestamp');
-        const timestamp = tsEl ? tsEl.innerText.trim() : '';
-        const isOutgoing = el.classList.contains('outgoing')
-            || !!el.closest('.outgoing')
-            || el.getAttribute('data-e2e-is-outgoing') === 'true';
-        const senderEl = el.querySelector('.sender-name, [data-e2e-sender-name]');
+        if (!text) continue;
+
+        // Prefer absolute timestamp, fall back to relative
+        const absTs = item.querySelector('mws-absolute-timestamp');
+        const relTs = item.querySelector('mws-relative-timestamp, .timestamp');
+        const time = absTs ? absTs.textContent.trim() : (relTs ? relTs.innerText.trim() : '');
+
+        const isOutgoing = item.classList.contains('outgoing')
+            || !!item.closest('.outgoing')
+            || item.getAttribute('data-e2e-is-outgoing') === 'true';
+        const senderEl = item.querySelector('.sender-name, [data-e2e-sender-name]');
         const sender = senderEl ? senderEl.innerText.trim() : (isOutgoing ? 'Me' : '');
-        return {text, timestamp, is_outgoing: isOutgoing, sender};
-    }).filter(m => m.text);
+
+        result.push({text, time, date: currentDate, is_outgoing: isOutgoing, sender});
+    }
+
+    return result.filter(m => !m.is_outgoing).slice(-limit);
 })(%d)
 """
 
@@ -76,7 +105,11 @@ TOOLS: list[Tool] = [
         inputSchema={
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "description": "Max conversations to return", "default": 20},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max conversations to return",
+                    "default": 20,
+                },
             },
         },
     ),
@@ -84,13 +117,23 @@ TOOLS: list[Tool] = [
         name="google_messages_read_chat",
         description=(
             "Open an SMS conversation in Google Messages Web and return recent messages. "
-            "Accepts a contact name (partial match) or a conversation index from google_messages_list_chats."
+            "Accepts a contact name (partial match) or a conversation index from google_messages_list_chats. "
+            "Each message includes: text, time (absolute if available, e.g. '2:35 AM'), "
+            "date (day name from tombstone separator, e.g. 'Saturday', 'Monday'), "
+            "is_outgoing, and sender."
         ),
         inputSchema={
             "type": "object",
             "properties": {
-                "chat":  {"type": "string", "description": "Contact name (partial match) or conversation index"},
-                "limit": {"type": "integer", "description": "Number of recent messages to return", "default": 20},
+                "chat": {
+                    "type": "string",
+                    "description": "Contact name (partial match) or conversation index",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of recent messages to return",
+                    "default": 20,
+                },
             },
             "required": ["chat"],
         },
@@ -105,7 +148,10 @@ TOOLS: list[Tool] = [
         inputSchema={
             "type": "object",
             "properties": {
-                "to":      {"type": "string", "description": "Contact name (existing) or phone number (new)"},
+                "to": {
+                    "type": "string",
+                    "description": "Contact name (existing) or phone number (new)",
+                },
                 "message": {"type": "string", "description": "SMS text to send"},
             },
             "required": ["to", "message"],
@@ -120,22 +166,26 @@ TOOLS: list[Tool] = [
 
 async def _google_messages_ensure_open() -> dict[str, Any]:
     from cdp import evaluate_in_tab, navigate_in_tab
+
     url_result = await evaluate_in_tab("window.location.href", _GM_HOST)
     current = str(url_result.get("result", ""))
     if "messages.google.com" not in current:
         await navigate_in_tab(_GM_URL, _GM_HOST)
         await asyncio.sleep(5)
     check = await evaluate_in_tab(
-        '!!document.querySelector("mws-conversations-list, mws-conversation-list-item, a[href*=\'conversations/\']")',
+        "!!document.querySelector(\"mws-conversations-list, mws-conversation-list-item, a[href*='conversations/']\")",
         _GM_HOST,
     )
     if not check.get("result"):
-        return {"error": "Google Messages not paired. Open VNC (port 6080) and scan the QR code."}
+        return {
+            "error": "Google Messages not paired. Open VNC (port 6080) and scan the QR code."
+        }
     return {"status": "ok"}
 
 
 async def _google_messages_open_chat(chat: str) -> dict[str, Any]:
     from cdp import _dispatch_click, _open_session, evaluate_in_tab
+
     login = await _google_messages_ensure_open()
     if "error" in login:
         return login
@@ -190,6 +240,7 @@ async def _google_messages_open_chat(chat: str) -> dict[str, Any]:
 
 async def _google_messages_list_chats(limit: int = 20) -> dict[str, Any]:
     from cdp import evaluate_in_tab
+
     login = await _google_messages_ensure_open()
     if "error" in login:
         return login
@@ -201,6 +252,7 @@ async def _google_messages_list_chats(limit: int = 20) -> dict[str, Any]:
 
 async def _google_messages_read_chat(chat: str, limit: int = 20) -> dict[str, Any]:
     from cdp import evaluate_in_tab
+
     opened = await _google_messages_open_chat(chat)
     if "error" in opened:
         return opened
@@ -212,6 +264,7 @@ async def _google_messages_read_chat(chat: str, limit: int = 20) -> dict[str, An
 
 async def _google_messages_send_message(to: str, message: str) -> dict[str, Any]:
     from cdp import evaluate_in_tab, type_text_in_tab
+
     login = await _google_messages_ensure_open()
     if "error" in login:
         return login
@@ -222,18 +275,21 @@ async def _google_messages_send_message(to: str, message: str) -> dict[str, Any]
     )
 
     if is_phone:
-        fab_result = await evaluate_in_tab("""
+        fab_result = await evaluate_in_tab(
+            """
         (() => {
             const fab = document.querySelector('[data-e2e-start-chat-fab], [aria-label="Start chat" i], a[href*="new"]');
             if (!fab) return 'NOT_FOUND';
             fab.click(); return 'CLICKED';
         })()
-        """, _GM_HOST)
+        """,
+            _GM_HOST,
+        )
         if fab_result.get("result") == "NOT_FOUND":
             return {"error": "Could not find 'Start chat' button in Google Messages."}
         await asyncio.sleep(1)
         input_selectors = [
-            '[data-e2e-contact-input]',
+            "[data-e2e-contact-input]",
             'input[placeholder*="name" i]',
             'input[placeholder*="number" i]',
             'input[aria-label*="recipient" i]',
@@ -249,12 +305,15 @@ async def _google_messages_send_message(to: str, message: str) -> dict[str, Any]
         if not typed:
             return {"error": "Could not find recipient input in Google Messages."}
         await asyncio.sleep(1.5)
-        await evaluate_in_tab("""
+        await evaluate_in_tab(
+            """
         (() => {
             const el = document.activeElement || document.body;
             el.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', keyCode:13, bubbles:true}));
         })()
-        """, _GM_HOST)
+        """,
+            _GM_HOST,
+        )
         await asyncio.sleep(1.5)
     else:
         opened = await _google_messages_open_chat(to)
@@ -281,12 +340,15 @@ async def _google_messages_send_message(to: str, message: str) -> dict[str, Any]
             send_clicked = True
             break
     if not send_clicked:
-        await evaluate_in_tab("""
+        await evaluate_in_tab(
+            """
         (() => {
             const el = document.activeElement || document.body;
             el.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', keyCode:13, bubbles:true}));
         })()
-        """, _GM_HOST)
+        """,
+            _GM_HOST,
+        )
 
     await asyncio.sleep(1)
     return {"status": "sent", "to": to, "message": message}
@@ -310,7 +372,7 @@ async def _h_google_messages_send_message(a: dict) -> dict:
 
 
 HANDLERS: dict = {
-    "google_messages_list_chats":   _h_google_messages_list_chats,
-    "google_messages_read_chat":    _h_google_messages_read_chat,
+    "google_messages_list_chats": _h_google_messages_list_chats,
+    "google_messages_read_chat": _h_google_messages_read_chat,
     "google_messages_send_message": _h_google_messages_send_message,
 }
