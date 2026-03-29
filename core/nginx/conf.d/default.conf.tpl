@@ -5,8 +5,12 @@ server {
     port_in_redirect off;
 
     # -------------------------------------------------------------------------
-    # Dashboard — index page listing all available services
+    # Dashboard — redirect no-trailing-slash, serve index at slash
     # -------------------------------------------------------------------------
+    location = ${BASE_PATH} {
+        return 301 ${BASE_PATH}/;
+    }
+
     location = ${BASE_PATH}/ {
         default_type text/html;
         return 200 '<!DOCTYPE html>
@@ -170,6 +174,15 @@ server {
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
         proxy_buffering off;
+    }
+
+    # -------------------------------------------------------------------------
+    # Favicon — suppress 404 logs
+    # -------------------------------------------------------------------------
+    location = /favicon.ico {
+        return 204;
+        access_log off;
+        log_not_found off;
     }
 
     # -------------------------------------------------------------------------
