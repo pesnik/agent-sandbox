@@ -1,0 +1,54 @@
+version: "3.9"
+
+# ---------------------------------------------------------------------------
+# Google Messages MCP sidecar — OpenMessage (libgm + Go binary)
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gmessages-mcp.yml up
+#
+# First-time pairing:
+#   Open http://localhost:8080/gmessages/ in your browser
+#   Scan the QR code with the Google Messages app on your phone:
+#   Messages → profile icon → Device pairing → Pair new device
+#
+# MCP SSE endpoint (connect your agent here):
+#   http://localhost:7007/mcp/sse          # direct
+#   http://localhost:8080/gmessages/mcp/sse  # via nginx dashboard
+#
+# NOTE: Google is migrating Messages for Web from QR pairing to Google Account
+# sign-in. If pairing breaks, check https://github.com/mautrix/gmessages for
+# protocol updates.
+# ---------------------------------------------------------------------------
+
+services:
+  gmessages-mcp:
+    build:
+      context: ./modules/gmessages-mcp
+      dockerfile: Dockerfile
+    image: agent-gmessages-mcp:latest
+    container_name: agent-gmessages-mcp
+    ports:
+      - "${GMESSAGES_PORT:-7007}:7007"     # Web UI (QR pairing) + MCP SSE
+    volumes:
+      - gmessages-mcp-data:/data            # Session token + message cache
+    environment:
+      - DATA_DIR=/data
+      - PORT=7007
+    restart: unless-stopped
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7007/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  gmessages-mcp-data:
+    name: agent-gmessages-mcp-data
+
+networks:
+  default:
+    name: agent-sandbox-net
+    external: true

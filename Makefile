@@ -82,6 +82,17 @@ help:
 	@echo "  make docker-test     Run e2e suite against the running container"
 	@echo "  make docker-shell    Open bash inside the container"
 	@echo ""
+	@echo "Messaging sidecar targets (native protocol — no browser needed):"
+	@echo "  make messaging-up      Start both WhatsApp + Google Messages sidecars"
+	@echo "  make messaging-down    Stop both sidecars"
+	@echo "  make whatsapp-up       Build + start WhatsApp MCP sidecar"
+	@echo "  make whatsapp-down     Stop WhatsApp MCP sidecar"
+	@echo "  make whatsapp-logs     Follow WhatsApp MCP logs (shows QR on first run)"
+	@echo "  make whatsapp-qr       Alias for whatsapp-logs (for QR scanning)"
+	@echo "  make gmessages-up      Build + start Google Messages MCP sidecar"
+	@echo "  make gmessages-down    Stop Google Messages MCP sidecar"
+	@echo "  make gmessages-logs    Follow Google Messages MCP logs"
+	@echo ""
 
 # =============================================================================
 # Local — setup
@@ -223,3 +234,54 @@ docker-shell:
 docker-test:
 	@echo "Running e2e tests against Docker container..."
 	python3 tests/e2e.py
+
+# =============================================================================
+# Messaging sidecars — WhatsApp (whatsmeow) + Google Messages (OpenMessage)
+# Both require the core sandbox to be running first (shared agent-sandbox-net).
+# =============================================================================
+
+.PHONY: messaging-up
+messaging-up: whatsapp-up gmessages-up
+
+.PHONY: messaging-down
+messaging-down: whatsapp-down gmessages-down
+
+# --- WhatsApp MCP (pesnik/whatsapp-mcp Go bridge + FastMCP SSE) ---
+
+.PHONY: whatsapp-up
+whatsapp-up:
+	@echo "Building + starting WhatsApp MCP sidecar..."
+	docker compose -f docker-compose.yml -f docker-compose.whatsapp-mcp.yml up -d --build whatsapp-mcp
+	@echo "WhatsApp MCP starting. Run 'make whatsapp-logs' to see QR code (first run only)."
+	@echo "MCP SSE: http://localhost:8081/sse  |  via nginx: http://localhost:8080/whatsapp-mcp/sse"
+
+.PHONY: whatsapp-down
+whatsapp-down:
+	docker compose -f docker-compose.yml -f docker-compose.whatsapp-mcp.yml stop whatsapp-mcp
+	docker compose -f docker-compose.yml -f docker-compose.whatsapp-mcp.yml rm -f whatsapp-mcp
+
+.PHONY: whatsapp-logs
+whatsapp-logs:
+	docker logs -f agent-whatsapp-mcp
+
+.PHONY: whatsapp-qr
+whatsapp-qr: whatsapp-logs   # alias — QR code appears here on first run
+
+# --- Google Messages MCP (OpenMessage / libgm) ---
+
+.PHONY: gmessages-up
+gmessages-up:
+	@echo "Building + starting Google Messages MCP sidecar..."
+	docker compose -f docker-compose.yml -f docker-compose.gmessages-mcp.yml up -d --build gmessages-mcp
+	@echo "Google Messages MCP starting."
+	@echo "Open http://localhost:8080/gmessages/ to scan QR code (first run only)."
+	@echo "MCP SSE: http://localhost:7007/mcp/sse  |  via nginx: http://localhost:8080/gmessages/mcp/sse"
+
+.PHONY: gmessages-down
+gmessages-down:
+	docker compose -f docker-compose.yml -f docker-compose.gmessages-mcp.yml stop gmessages-mcp
+	docker compose -f docker-compose.yml -f docker-compose.gmessages-mcp.yml rm -f gmessages-mcp
+
+.PHONY: gmessages-logs
+gmessages-logs:
+	docker logs -f agent-gmessages-mcp

@@ -1,0 +1,50 @@
+version: "3.9"
+
+# ---------------------------------------------------------------------------
+# WhatsApp MCP sidecar — whatsmeow Go bridge + FastMCP SSE server
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.whatsapp-mcp.yml up
+#
+# First-time pairing:
+#   docker logs -f agent-whatsapp-mcp   # QR code printed to stdout on first run
+#   Scan with WhatsApp mobile → Settings → Linked Devices → Link a Device
+#
+# MCP SSE endpoint (connect your agent here):
+#   http://localhost:8081/sse            # direct
+#   http://localhost:8080/whatsapp-mcp/sse  # via nginx dashboard
+# ---------------------------------------------------------------------------
+
+services:
+  whatsapp-mcp:
+    build:
+      context: ./modules/whatsapp-mcp
+      dockerfile: Dockerfile
+    image: agent-whatsapp-mcp:latest
+    container_name: agent-whatsapp-mcp
+    ports:
+      - "${WHATSAPP_MCP_PORT:-8081}:8081"   # FastMCP SSE endpoint
+    volumes:
+      - whatsapp-mcp-data:/data              # Go bridge SQLite DBs + session
+    environment:
+      - WHATSAPP_BRIDGE_URL=http://localhost:8080
+      - WHATSAPP_DB_PATH=/data/messages.db
+      - MCP_PORT=8081
+    restart: unless-stopped
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/sse"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  whatsapp-mcp-data:
+    name: agent-whatsapp-mcp-data
+
+networks:
+  default:
+    name: agent-sandbox-net
+    external: true
