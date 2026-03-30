@@ -391,6 +391,9 @@ _JS_SCROLL_UP = """(() => {
 
 _JS_FIND_CHAT = """
 (function(name) {
+    // Scroll sidebar to top so recently-used chats are visible
+    const nav = document.querySelector('nav.conversation-list');
+    if (nav) nav.scrollTop = 0;
     let items = document.querySelectorAll('mws-conversation-list-item');
     if (!items.length) items = document.querySelectorAll('a[href*="conversations/"]');
     const lower = name.toLowerCase();
@@ -420,11 +423,13 @@ async def google_messages_read(req: GoogleMessagesReadRequest) -> dict[str, Any]
     Returns messages with date (tombstone day name) and time (absolute timestamp).
     """
     try:
-        # Navigate to Google Messages if not already there
+        # Navigate to Google Messages conversations list if not already there.
+        # Always go to the list root so the sidebar is visible and scroll-reset works.
         url_result = await cdp_evaluate("window.location.href")
         current = str(url_result.get("result", ""))
-        if _GM_HOST not in current:
-            await cdp_navigate(f"https://{_GM_HOST}/web/conversations")
+        gm_base = f"https://{_GM_HOST}/web/conversations"
+        if _GM_HOST not in current or current.rstrip("/") != gm_base.rstrip("/"):
+            await cdp_navigate(gm_base)
             await asyncio.sleep(5)
 
         # Find and click the conversation
