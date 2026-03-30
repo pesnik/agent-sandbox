@@ -34,10 +34,10 @@ services:
     networks:
       - default
     healthcheck:
-      # nc checks the port is open; avoids hanging on the SSE stream
-      test: ["CMD-SHELL", "nc -z localhost 8081 || exit 1"]
+      # Python socket connect — works without curl/nc, avoids SSE hang
+      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(); s.settimeout(3); s.connect(('127.0.0.1', 8081)); s.close()"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
       start_period: 30s
 

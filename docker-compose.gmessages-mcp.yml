@@ -38,11 +38,12 @@ services:
     networks:
       - default
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:7007/"]
+      # Pass during pair mode (no server) and after serve starts
+      test: ["CMD-SHELL", "curl -sf http://localhost:7007/ || [ ! -f /data/.local/share/openmessage/session.json ]"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 20s
+      start_period: 10s
 
 volumes:
   gmessages-mcp-data:
