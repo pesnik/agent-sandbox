@@ -45,13 +45,25 @@ pip install -q \
 # Graceful shutdown
 # ---------------------------------------------------------------------------
 PIDS=()
+CHROME_PID=""
+API_PID=""
+MCP_PID=""
 cleanup() {
     echo ""
     echo "Shutting down ..."
-    for pid in "${PIDS[@]}"; do
+    # Stop API and MCP first (stateless)
+    for pid in "$API_PID" "$MCP_PID"; do
         kill "$pid" 2>/dev/null || true
     done
-    # Chrome may have spawned child processes — kill by user-data-dir marker
+    # Gracefully stop Chrome — needs time to flush IndexedDB/cookies to disk
+    if [[ -n "$CHROME_PID" ]]; then
+        kill -TERM "$CHROME_PID" 2>/dev/null || true
+        for i in $(seq 1 30); do
+            kill -0 "$CHROME_PID" 2>/dev/null || break
+            sleep 0.5
+        done
+    fi
+    # Kill any remaining child processes by data-dir marker
     pkill -f "agent-sandbox-local" 2>/dev/null || true
     echo "Done."
 }
@@ -75,11 +87,9 @@ rm -f "$CHROME_DATA_DIR/Singleton"*
     --window-size=1280,800 \
     --no-first-run \
     --no-default-browser-check \
-    --disable-background-networking \
     --disable-default-apps \
     --disable-extensions-except="$STEALTH_EXT" \
     --load-extension="$STEALTH_EXT" \
-    --disable-sync \
     --disable-blink-features=AutomationControlled \
     about:blank >/tmp/agent-sandbox-chrome.log 2>&1 &
 CHROME_PID=$!

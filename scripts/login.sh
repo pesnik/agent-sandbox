@@ -15,6 +15,8 @@ set -euo pipefail
 
 CHROME_DATA_DIR="${HOME}/.config/agent-sandbox-local"
 CHROME_BIN="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+STEALTH_EXT="$REPO_ROOT/core/stealth-extension"
 
 if [[ ! -x "$CHROME_BIN" ]]; then
     echo "ERROR: Google Chrome not found at: $CHROME_BIN"
@@ -40,11 +42,14 @@ echo ""
     --user-data-dir="$CHROME_DATA_DIR" \
     --no-first-run \
     --no-default-browser-check \
+    --disable-default-apps \
+    --disable-extensions-except="$STEALTH_EXT" \
+    --load-extension="$STEALTH_EXT" \
     --disable-blink-features=AutomationControlled \
     --window-size=1280,800 \
     "https://web.whatsapp.com" \
     "https://messages.google.com/web" \
-    "https://outlook.live.com"
+    "https://outlook.office.com/mail/inbox"
 
 echo "Chrome closed. Sessions saved."
 echo "Run ./scripts/run-local.sh to start the sandbox."
