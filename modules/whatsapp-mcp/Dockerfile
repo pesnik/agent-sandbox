@@ -6,8 +6,12 @@
 # =============================================================================
 
 # --- Stage 1: Go bridge binary ---
-FROM golang:1.23-alpine AS go-builder
-RUN apk add --no-cache git gcc musl-dev sqlite-dev
+# Use Debian-based Go builder so CGO links against glibc,
+# matching the python:3.11-slim runtime (also Debian/glibc).
+FROM golang:1.25 AS go-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git gcc libsqlite3-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
 # Clone whatsapp-mcp (your fork); the Go bridge lives in whatsapp-bridge/

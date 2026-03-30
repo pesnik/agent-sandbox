@@ -12,7 +12,7 @@
 # sign-in. If this breaks, check upstream for protocol updates.
 # =============================================================================
 
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 RUN apk add --no-cache git ca-certificates
 
 WORKDIR /src
@@ -32,6 +32,9 @@ COPY --from=builder /openmessage /usr/local/bin/openmessage
 # Data directory for session token and message cache
 RUN mkdir -p /data
 
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # OpenMessage uses $HOME to resolve ~/.local/share/openmessage/
 # Override HOME so data lands in the mounted volume
 ENV HOME=/data
@@ -39,5 +42,5 @@ ENV PORT=7007
 
 EXPOSE 7007
 
-# The binary serves on PORT when not invoked over stdio
-CMD ["/usr/local/bin/openmessage"]
+# entrypoint: runs 'pair' on first run (QR in logs), then 'serve'
+ENTRYPOINT ["/entrypoint.sh"]

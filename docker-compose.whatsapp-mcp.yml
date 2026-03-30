@@ -34,9 +34,10 @@ services:
     networks:
       - default
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8081/sse"]
+      # nc checks the port is open; avoids hanging on the SSE stream
+      test: ["CMD-SHELL", "nc -z localhost 8081 || exit 1"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
       start_period: 30s
 
