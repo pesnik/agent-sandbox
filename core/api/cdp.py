@@ -288,6 +288,31 @@ async def click_at(x: float, y: float) -> dict[str, Any]:
         await http.close()
 
 
+async def scroll_at(x: float, y: float, delta_x: float = 0, delta_y: float = 0) -> dict[str, Any]:
+    """
+    Dispatch a mouseWheel event at absolute viewport coordinates (x, y).
+
+    Returns:
+        { "x": float, "y": float, "delta_y": float, "status": "ok" }
+    """
+    http, cdp = await _open_session()
+    try:
+        await cdp.send(
+            "Input.dispatchMouseEvent",
+            {
+                "type": "mouseWheel",
+                "x": x,
+                "y": y,
+                "deltaX": delta_x,
+                "deltaY": delta_y,
+            },
+        )
+        return {"x": x, "y": y, "delta_x": delta_x, "delta_y": delta_y, "status": "ok"}
+    finally:
+        await cdp.close()
+        await http.close()
+
+
 async def type_text(selector: str, text: str) -> dict[str, Any]:
     """
     Focus the element matching `selector` and type `text` character-by-character.

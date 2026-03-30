@@ -28,6 +28,7 @@ from cdp import (
     evaluate as cdp_evaluate,
     navigate as cdp_navigate,
     screenshot as cdp_screenshot,
+    scroll_at as cdp_scroll_at,
     type_text as cdp_type_text,
 )
 
@@ -290,6 +291,23 @@ async def browser_click(req: BrowserClickRequest) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+class BrowserScrollRequest(BaseModel):
+    x: float
+    y: float
+    delta_x: float = 0
+    delta_y: float = 0
+
+
+@app.post("/v1/browser/scroll")
+async def browser_scroll(req: BrowserScrollRequest) -> dict[str, Any]:
+    """Dispatch a native mouseWheel scroll event at viewport coordinates (x, y)."""
+    try:
+        result = await cdp_scroll_at(req.x, req.y, req.delta_x, req.delta_y)
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.post("/v1/browser/type")
 async def browser_type(req: BrowserTypeRequest) -> dict[str, Any]:
     """Type text into an element identified by a CSS selector."""
@@ -375,6 +393,7 @@ _JS_FIND_CHAT = """
     for (const el of items) {
         const nameEl = el.querySelector('.name, [data-e2e-conversation-name], h3') || {innerText: ''};
         if (nameEl.innerText.trim().toLowerCase().includes(lower)) {
+            el.scrollIntoView({block: 'center'});
             const rect = el.getBoundingClientRect();
             return {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2};
         }

@@ -224,6 +224,17 @@ curl -X POST http://localhost:8080/v1/browser/navigate \
 curl http://localhost:8080/v1/browser/screenshot  # base64 PNG
 ```
 
+### Browser scroll (native virtual-scroll trigger)
+
+```bash
+curl -X POST http://localhost:8080/v1/browser/scroll \
+  -H 'Content-Type: application/json' \
+  -d '{"x": 170, "y": 430, "delta_y": 1500}'
+# → {"x": 170, "y": 430, "delta_x": 0, "delta_y": 1500, "status": "ok"}
+```
+
+Sends a native CDP `mouseWheel` event. Required for virtual-scroll lists (e.g. the Google Messages sidebar) where JS `WheelEvent` dispatch is ignored. Call repeatedly to load more items into the DOM.
+
 ### Google Messages (dedicated endpoint)
 
 ```bash
@@ -232,6 +243,8 @@ curl -X POST http://localhost:8080/v1/google-messages/read \
   -d '{"chat": "Alice", "limit": 50}'
 # → {"chat": "Alice", "count": 50, "messages": [...]}
 ```
+
+> **Note:** The sidebar only renders ~25 conversations (virtual scroll). If the target chat is not in the first 25, use `/v1/browser/scroll` to scroll the sidebar (x≈170, y≈430) until the chat appears in the DOM before calling `/read`.
 
 ---
 

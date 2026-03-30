@@ -15,8 +15,8 @@ core/                        # Single Docker image (Ubuntu 22.04)
     api.conf                 # uvicorn FastAPI :8091
     mcp.conf                 # MCP SSE server :8079
   nginx/conf.d/default.conf  # Reverse proxy routing (incl. optional sidecar upstreams)
-  api/main.py                # FastAPI routes (/v1/shell, /v1/files, /v1/browser, /v1/google-messages)
-  api/cdp.py                 # Pure CDP client (no Playwright dependency in the API)
+  api/main.py                # FastAPI routes (/v1/shell, /v1/files, /v1/browser, /v1/browser/scroll, /v1/google-messages)
+  api/cdp.py                 # Pure CDP client (no Playwright dependency in the API); exports scroll_at()
   mcp_server/                # MCP server (FastAPI + SSE transport)
     server.py                # Slim dispatcher — imports all tools from tools/
     tools/                   # One module per tool category
@@ -385,6 +385,19 @@ The click endpoint accepts either a CSS selector or absolute viewport coordinate
 Implemented via `cdp.click(selector)` and `cdp.click_at(x, y)` respectively.
 Coordinates map directly to `Input.dispatchMouseEvent` — no DOM query needed.
 
+## `/v1/browser/scroll` — native mouseWheel scroll
+
+Dispatches a CDP `Input.dispatchMouseEvent` of type `mouseWheel` at absolute viewport coordinates. Unlike JS `WheelEvent` dispatched via `evaluate`, this triggers the browser's native scroll handling — required to load new items in virtual-scroll lists (e.g. the Google Messages sidebar).
+
+```json
+POST /v1/browser/scroll
+{"x": 170, "y": 430, "delta_x": 0, "delta_y": 1500}
+```
+
+**When to use:** when you need to scroll a virtual list to load more DOM items — e.g. a Google Messages sidebar that only renders ~25 conversations. Call repeatedly (with `sleep` between calls) until the target conversation appears in `document.querySelectorAll('mws-conversation-list-item')`.
+
+**Why JS WheelEvent dispatch doesn't work:** `WheelEvent` from JS is marked non-trusted and ignored by Angular/virtual-scroll implementations. Only native CDP input events are trusted.
+
 ## `/v1/google-messages/read` — read messages with timestamps
 
 Dedicated endpoint for reading Google Messages conversations. Handles conversation
@@ -418,6 +431,8 @@ Returns messages with `text`, `time` (absolute), `date` (tombstone day name),
 | Google Messages returns only 1 result | Page not fully loaded | `navigate_in_tab` + extra `asyncio.sleep(8)` on first open |
 | Google Messages timestamps empty | Relative timestamps shown by default | Read `mws-absolute-timestamp` elements; click messages to reveal absolute time |
 | Google Messages few messages loaded | Virtual scrolling only renders visible | Scroll `mws-bottom-anchored.container` to top repeatedly until count stabilizes |
+| Google Messages `/read` returns 0 messages for a chat that exists | Chat is below the visible viewport in sidebar; `getBoundingClientRect()` returns off-screen y coords; `cdp_click_at` clicks outside viewport | Fixed: `_JS_FIND_CHAT` calls `el.scrollIntoView({block:'center'})` before reading rect |
+| Google Messages `/read` returns 404 for a chat that exists | Chat not yet in the DOM (virtual scrolling — sidebar only renders ~25 items) | Scroll the sidebar into the chat's vicinity first: POST `/v1/browser/scroll` with `x=170,y=430,delta_y=1500` repeatedly until the chat appears in `mws-conversation-list-item` DOM, then call `/read` |
 | `PIDS[-1]` bad array subscript | macOS ships bash 3.2 (no negative indices) | Use named variable `PID=$!` instead |
 | Chrome `libgtk-3-0:amd64 not installable` | Building arm64 image on Apple Silicon | Add `FROM --platform=linux/amd64` to `core/Dockerfile` |
 | Go bridge `cannot execute: required file not found` | CGO binary built on Alpine (musl) run on Debian (glibc) | Use `golang:1.25` (Debian) builder + `python:3.11-slim` runtime — both glibc |
