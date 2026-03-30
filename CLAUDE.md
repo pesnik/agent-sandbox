@@ -4,7 +4,7 @@
 
 ```
 core/                        # Single Docker image (Ubuntu 22.04)
-  Dockerfile                 # Build definition
+  Dockerfile                 # Build definition (--platform=linux/amd64 for Chrome on Apple Silicon)
   entrypoint.sh              # Container start: writes supervisord confs, starts supervisord
   supervisord/conf.d/        # One .conf per service (always-on)
     vnc.conf                 # Xtigervnc :5900 + xfce session
@@ -14,8 +14,8 @@ core/                        # Single Docker image (Ubuntu 22.04)
     vscode.conf              # code-server :8200
     api.conf                 # uvicorn FastAPI :8091
     mcp.conf                 # MCP SSE server :8079
-  nginx/conf.d/default.conf  # Reverse proxy routing
-  api/main.py                # FastAPI routes (/v1/shell, /v1/files, /v1/browser)
+  nginx/conf.d/default.conf  # Reverse proxy routing (incl. optional sidecar upstreams)
+  api/main.py                # FastAPI routes (/v1/shell, /v1/files, /v1/browser, /v1/google-messages)
   api/cdp.py                 # Pure CDP client (no Playwright dependency in the API)
   mcp_server/                # MCP server (FastAPI + SSE transport)
     server.py                # Slim dispatcher — imports all tools from tools/
@@ -31,6 +31,16 @@ core/                        # Single Docker image (Ubuntu 22.04)
     manifest.json            # Manifest V3, content_script, world: MAIN
     stealth.js               # Removes navigator.webdriver, spoofs plugins/mimeTypes
 
+modules/                     # Optional sidecar definitions
+  whatsapp-mcp/              # Native WhatsApp sidecar (whatsmeow Go bridge + FastMCP)
+    Dockerfile               # Go builder (Debian glibc) + python:3.11-slim runtime
+    entrypoint.sh            # Starts Go bridge, waits for it, starts Python MCP server
+    mcp_server.py            # FastMCP SSE server — reads Go bridge SQLite, calls REST for sends
+    requirements.txt         # mcp, httpx, uvicorn, starlette
+  gmessages-mcp/             # Native Google Messages sidecar (OpenMessage Go binary)
+    Dockerfile               # Alpine Go builder + Alpine runtime
+    entrypoint.sh            # pair (first run) then serve
+
 sdk/                         # Zero-dependency Python SDK for the REST API
   client.py                  # SandboxClient — browser / shell / files / status
   __init__.py
@@ -39,9 +49,10 @@ sdk/                         # Zero-dependency Python SDK for the REST API
 
 Makefile                     # Lifecycle commands for both local and Docker runtimes
 docker-compose.yml           # Main compose file (sandbox service)
+docker-compose.whatsapp-mcp.yml   # Optional WhatsApp native protocol sidecar
+docker-compose.gmessages-mcp.yml  # Optional Google Messages native protocol sidecar
 docker-compose.android.yml   # Optional Android 13 sidecar
 tests/e2e.py                 # 37 e2e tests — run against a live container
-modules/                     # Optional sidecar module definitions
 scripts/
   run-local.sh               # Native macOS runtime: headless Chrome + API + MCP
   login.sh                   # Headed Chrome for one-time auth (WhatsApp, Messages, Outlook)
@@ -75,6 +86,42 @@ Chrome user-data-dir: `~/.config/agent-sandbox-local` — shared between `login.
 
 `docker-compose.yml` runs the full stack inside Ubuntu 22.04: VNC desktop (XFCE4 + TigerVNC), noVNC, nginx, Chrome, VS Code, API, MCP — all via supervisord. Use for remote servers or when VNC desktop access is needed.
 
+### Docker (with native messaging sidecars)
+
+Two optional sidecars provide browser-independent, session-persistent messaging:
+
+```bash
+make messaging-up        # build + start both
+make whatsapp-up         # WhatsApp only
+make gmessages-up        # Google Messages only
+```
+
+All sidecars join `agent-sandbox-net`. The core nginx proxies to them by Docker service name using the embedded DNS resolver — starts cleanly even when sidecars are offline.
+
+## Session persistence
+
+### Why browser sessions drift or reset
+
+Three Chrome flags were killing sessions silently:
+- `--disable-background-networking` — kills service workers (WhatsApp, Google Messages go offline)
+- `--disable-sync` — blocks Outlook MSAL token writes to disk
+- Ungraceful shutdown — IndexedDB writes aren't flushed if Chrome is SIGKILL'd
+
+**Fix applied in `scripts/run-local.sh`:** both flags removed; graceful shutdown waits up to 15s for Chrome to flush IndexedDB/cookies before force-kill.
+
+**Fix applied in `scripts/login.sh`:** added stealth extension flags (`--disable-extensions-except`, `--load-extension`) and corrected Outlook URL to `https://outlook.office.com/mail/inbox`. Both headed login and headless runtime now use identical flags so service-worker fingerprints match.
+
+### Native protocol sidecars (recommended for reliability)
+
+The WhatsApp MCP and Google Messages MCP sidecars bypass the browser entirely:
+
+| Sidecar | Protocol | Session storage |
+|---------|----------|----------------|
+| `agent-whatsapp-mcp` | whatsmeow (Noise + Signal) | `agent-whatsapp-mcp-data` volume (SQLite) |
+| `agent-gmessages-mcp` | libgm / OpenMessage | `agent-gmessages-mcp-data` volume (JSON token) |
+
+Sessions survive container restarts, image rebuilds, and `docker compose down`. Re-pairing is only needed if the phone unlinks the device.
+
 ## Key design decisions
 
 **Single container, always-on services.** Everything (VNC, browser, VS Code, API, MCP) starts automatically via supervisord. There are no opt-in modules for core services — just build and run.
@@ -91,6 +138,14 @@ Chrome user-data-dir: `~/.config/agent-sandbox-local` — shared between `login.
 
 **noVNC 1.4.0, not apt.** The apt package is version 1.0.0 which has bugs with `SecurityTypes None`. We download 1.4.0 directly from GitHub in the Dockerfile.
 
+**`core/Dockerfile` is `--platform=linux/amd64`.** Chromium and its X11/GTK dependencies are amd64-only. On Apple Silicon (arm64) hosts, Docker must emulate x86 for this image. Added `FROM --platform=linux/amd64 ubuntu:22.04` to fix `libgtk-3-0:amd64 not installable` failures.
+
+**Messaging sidecars use separate compose files.** Following the `docker-compose.android.yml` pattern — each sidecar lives in `docker-compose.<name>.yml` and joins `agent-sandbox-net` (external). Core container starts cleanly without sidecars; nginx uses Docker DNS resolver (`127.0.0.11`) with `set $upstream` variable so proxy blocks compile even when upstream doesn't exist yet.
+
+**CGO binaries must match runtime libc.** The whatsapp-mcp Go bridge uses CGO + libsqlite3. Built on Alpine (musl libc), the binary fails to exec in Debian-based runtimes. Dockerfile uses `golang:1.25` (Debian) as builder and `python:3.11-slim` (Debian) as runtime — both glibc. gmessages (OpenMessage) is pure Go, so Alpine builder + Alpine runtime works fine.
+
+**gmessages pair-before-serve.** `openmessage serve` exits immediately if no session exists. `entrypoint.sh` checks for `session.json` and runs `openmessage pair` (blocking, shows QR in logs) before starting `serve`. Health check passes during pair mode via: `curl -sf http://localhost:7007/ || [ ! -f /data/.local/share/openmessage/session.json ]`.
+
 ## Port reference
 
 | External | Service | Notes |
@@ -98,7 +153,9 @@ Chrome user-data-dir: `~/.config/agent-sandbox-local` — shared between `login.
 | 8080 | nginx | All services proxied here |
 | 5900 | TigerVNC | Direct VNC |
 | 6080 | noVNC | Direct WebSocket |
-| 8079 | MCP server | Also at `/mcp/sse` via nginx |
+| 8079 | MCP server (browser) | Also at `/mcp/sse` via nginx |
+| 8081 | WhatsApp MCP SSE | Sidecar — also at `/whatsapp-mcp/sse` via nginx |
+| 7007 | Google Messages MCP | Sidecar — also at `/gmessages/mcp/sse` via nginx |
 | 8091 | REST API | Also at `/v1/` via nginx |
 | 9222 | Chromium CDP | Also at `/cdp/` via nginx — prefer the proxy |
 
@@ -246,9 +303,46 @@ DOM selectors used: `mws-conversation-list-item` for the sidebar,
 `mws-message-wrapper` for message bubbles, `mws-tombstone-message-wrapper` for date
 separators, `mws-absolute-timestamp` for time, `[data-e2e-send-button]` for send.
 
-## WhatsApp MCP tools
+## Native protocol MCP sidecars
 
-Three tools exposed via the MCP server (`/mcp/sse`) that automate WhatsApp Web running
+Two independent MCP SSE endpoints backed by native protocol implementations — no browser, no VNC required.
+
+### WhatsApp MCP sidecar (`/whatsapp-mcp/sse`)
+
+Source: `modules/whatsapp-mcp/` — pesnik/whatsapp-mcp fork (whatsmeow Go bridge + FastMCP Python server).
+
+Architecture:
+1. Go bridge (`whatsapp-bridge`) connects to WhatsApp servers using the Noise + Signal Protocol, stores all messages in SQLite at `/data/messages.db`
+2. Python MCP server reads from SQLite for list/read, calls the Go bridge REST API for sends
+3. `entrypoint.sh` starts the bridge first, polls until TCP :8080 is up, then starts the MCP server on :8081
+
+| Tool | Required args | Optional |
+|------|--------------|---------|
+| `whatsapp_list_chats` | — | `limit` (default 20) |
+| `whatsapp_read_chat` | `chat` | `limit` (default 20) |
+| `whatsapp_send_message` | `to`, `message` | — |
+| `whatsapp_search_contacts` | `query` | `limit` (default 10) |
+
+First-time pairing: `make whatsapp-qr` — QR code printed to container logs. Scan with WhatsApp mobile → Settings → Linked Devices → Link a Device.
+
+### Google Messages MCP sidecar (`/gmessages/mcp/sse`)
+
+Source: `modules/gmessages-mcp/` — MaxGhenis/openmessage (OpenMessage Go binary wrapping mautrix-gmessages / libgm).
+
+OpenMessage is a single binary that:
+- Runs `openmessage pair` on first run — shows QR code at web UI (`/gmessages/`) or in logs
+- Runs `openmessage serve` on subsequent starts — serves web UI + MCP SSE at :7007
+
+Native tools (from OpenMessage):
+- `get_messages`, `list_conversations`, `send_message`, `search_messages`, `get_status`
+
+First-time pairing: open `http://localhost:8080/gmessages/` and scan with Google Messages → profile icon → Device pairing → Pair new device.
+
+> **Note:** Google is migrating Messages for Web from QR pairing to Google Account sign-in. If pairing breaks, check https://github.com/mautrix/gmessages for protocol updates.
+
+## WhatsApp MCP tools (browser-based)
+
+Three tools exposed via the browser MCP server (`/mcp/sse`) that automate WhatsApp Web running
 in the persistent VNC browser session. No re-login needed — session state is preserved.
 
 | Tool | Required args | Optional |
@@ -315,12 +409,37 @@ Returns messages with `text`, `time` (absolute), `date` (tombstone day name),
 | Google Messages timestamps empty | Relative timestamps shown by default | Read `mws-absolute-timestamp` elements; click messages to reveal absolute time |
 | Google Messages few messages loaded | Virtual scrolling only renders visible | Scroll `mws-bottom-anchored.container` to top repeatedly until count stabilizes |
 | `PIDS[-1]` bad array subscript | macOS ships bash 3.2 (no negative indices) | Use named variable `PID=$!` instead |
+| Chrome `libgtk-3-0:amd64 not installable` | Building arm64 image on Apple Silicon | Add `FROM --platform=linux/amd64` to `core/Dockerfile` |
+| Go bridge `cannot execute: required file not found` | CGO binary built on Alpine (musl) run on Debian (glibc) | Use `golang:1.25` (Debian) builder + `python:3.11-slim` runtime — both glibc |
+| `openmessage serve` exits immediately | No session.json exists yet | `entrypoint.sh` runs `openmessage pair` first, then `serve` |
+| WhatsApp/Google Messages service workers offline | `--disable-background-networking` flag | Flag removed from `run-local.sh` and `login.sh` |
+| Outlook MSAL token not saved | `--disable-sync` flag | Flag removed; both login.sh and run-local.sh now use identical Chrome flags |
+| Browser session lost on stop | Chrome SIGKILL before IndexedDB flush | `run-local.sh` sends SIGTERM and waits up to 15s for graceful Chrome exit |
 
 ## Adding a new always-on service
 
 1. Add `core/supervisord/conf.d/<name>.conf` with a `[program:<name>]` block
 2. If it needs an nginx route, add a `location` block to `core/nginx/conf.d/default.conf`
 3. Rebuild: `docker compose build --no-cache sandbox && docker compose up -d`
+
+## Adding a new optional sidecar
+
+1. Create `modules/<name>/Dockerfile` + any support files
+2. Create `docker-compose.<name>.yml` joining `agent-sandbox-net` (external)
+3. Add nginx proxy block to `core/nginx/conf.d/default.conf` using the optional upstream pattern:
+   ```nginx
+   location /myservice/ {
+       resolver 127.0.0.11 valid=10s ipv6=off;
+       set $upstream http://myservice:PORT;
+       proxy_pass $upstream/;
+       proxy_buffering off;
+       proxy_cache off;
+       proxy_set_header Host $host;
+       proxy_set_header X-Real-IP $remote_addr;
+   }
+   ```
+   The `set $upstream` variable prevents nginx startup failure when the sidecar is offline (nginx only resolves the DNS at request time, not at startup).
+4. Add `make` targets following the `whatsapp-up` / `whatsapp-down` pattern in `Makefile`
 
 ## Stealth extension
 
