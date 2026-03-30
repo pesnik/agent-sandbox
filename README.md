@@ -224,6 +224,24 @@ curl -X POST http://localhost:8080/v1/browser/navigate \
 curl http://localhost:8080/v1/browser/screenshot  # base64 PNG
 ```
 
+### Outlook (dedicated endpoints)
+
+```bash
+# List inbox
+curl -X POST http://localhost:8080/v1/outlook/list \
+  -H 'Content-Type: application/json' \
+  -d '{"limit": 20, "unread_only": false}'
+# → {"emails": [{index, unread, sender, senderEmail, subject, time, preview}], "count": N}
+
+# Read full email by index
+curl -X POST http://localhost:8080/v1/outlook/read \
+  -H 'Content-Type: application/json' \
+  -d '{"index": 1}'
+# → {subject, from, to, cc, date, body_text}
+```
+
+> Targets the active tab — Outlook must be focused. Activate via `http://localhost:9222/json/activate/<tab-id>` if needed.
+
 ### WhatsApp (dedicated endpoint)
 
 ```bash

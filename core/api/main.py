@@ -556,3 +556,136 @@ async def whatsapp_read(req: WhatsAppReadRequest) -> dict[str, Any]:
         raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Outlook
+# ---------------------------------------------------------------------------
+
+_OL_HOST = "outlook"
+
+_JS_OL_LIST_EMAILS = """
+(function(limit) {
+    const items = document.querySelectorAll('[role="listbox"] [role="option"]');
+    return Array.from(items).slice(0, limit).map((el, idx) => {
+        const label = el.getAttribute('aria-label') || '';
+        const convId = el.getAttribute('data-convid') || '';
+        const unread = label.toLowerCase().startsWith('unread');
+        const leaves = Array.from(el.querySelectorAll('span, div'))
+            .filter(s => s.children.length === 0 && (s.innerText || '').trim())
+            .filter(s => !/^\(\d+\)$/.test((s.innerText || '').trim()));
+        let sender = '', senderEmail = '', subject = '', time = '', preview = '';
+        for (const s of leaves) {
+            const text = (s.innerText || '').trim();
+            const title = s.getAttribute('title') || '';
+            if (!time && /^\d{1,2}:\d{2}/.test(text)) { time = text; }
+            else if (!sender) { sender = text; senderEmail = title.includes('@') ? title : ''; }
+            else if (!subject) { subject = text; }
+            else if (!preview) { preview = text; }
+        }
+        return {index: idx, convId, unread, sender, senderEmail, subject, time, preview};
+    });
+})(%d)
+"""
+
+_JS_OL_READ_HEADER = """
+(function() {
+    const h3s = Array.from(document.querySelectorAll('[role="heading"][aria-level="3"]'));
+    let subject = '', from_ = '', to_ = '', cc_ = '', date_ = '';
+    for (const el of h3s) {
+        const text = (el.innerText || '').trim();
+        if (!text) continue;
+        if (el.tagName === 'DIV' && !subject && !text.startsWith('To:') && !text.startsWith('Cc:')
+                && !text.match(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)/))
+            subject = text.split('\\n')[0];
+        if (el.tagName === 'SPAN' && !from_) from_ = text;
+        if (text.startsWith('To:')) to_ = text;
+        if (text.startsWith('Cc:')) cc_ = text;
+        if (text.match(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\\s/)) date_ = text;
+    }
+    return {subject, from_: from_, to_: to_, cc_: cc_, date_: date_};
+})()
+"""
+
+_JS_OL_READ_BODY = """
+(function() {
+    const doc = document.querySelector('[role="document"]');
+    return {body_text: doc ? (doc.innerText || '') : ''};
+})()
+"""
+
+
+class OutlookListRequest(BaseModel):
+    limit: int = 20
+    unread_only: bool = False
+
+
+class OutlookReadRequest(BaseModel):
+    index: int
+
+
+@app.post("/v1/outlook/list")
+async def outlook_list(req: OutlookListRequest) -> dict[str, Any]:
+    """List emails from the Outlook inbox visible in the browser."""
+    try:
+        url_result = await cdp_evaluate("window.location.href")
+        current = str(url_result.get("result", "")).lower()
+        if _OL_HOST not in current or "mail" not in current:
+            await cdp_navigate("https://outlook.cloud.microsoft/mail/inbox")
+            await asyncio.sleep(4)
+
+        check = await cdp_evaluate('!!document.querySelector("[aria-label=\\"New mail\\"]")')
+        if not check.get("result"):
+            raise HTTPException(status_code=503, detail="Outlook not logged in. Open VNC and log in manually.")
+
+        await asyncio.sleep(1)
+        result = await cdp_evaluate(_JS_OL_LIST_EMAILS % req.limit)
+        emails = result.get("result") or []
+        if req.unread_only:
+            emails = [e for e in emails if e.get("unread")]
+
+        return {"emails": emails, "count": len(emails)}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/v1/outlook/read")
+async def outlook_read(req: OutlookReadRequest) -> dict[str, Any]:
+    """Click an inbox email by index and return its subject, from, date, and body."""
+    try:
+        url_result = await cdp_evaluate("window.location.href")
+        current = str(url_result.get("result", "")).lower()
+        if _OL_HOST not in current or "mail" not in current:
+            await cdp_navigate("https://outlook.cloud.microsoft/mail/inbox")
+            await asyncio.sleep(4)
+
+        click_js = f'document.querySelectorAll(\'[role="listbox"] [role="option"]\')[{req.index}]?.click()'
+        await cdp_evaluate(click_js)
+        await asyncio.sleep(2)
+
+        check = await cdp_evaluate('!!document.querySelector(\'[role="document"]\')')
+        if not check.get("result"):
+            raise HTTPException(status_code=404, detail=f"No email at index {req.index} or reading pane did not open.")
+
+        header = await cdp_evaluate(_JS_OL_READ_HEADER)
+        body = await cdp_evaluate(_JS_OL_READ_BODY)
+        h = header.get("result") or {}
+        b = body.get("result") or {}
+
+        return {
+            "index": req.index,
+            "subject": h.get("subject", ""),
+            "from": h.get("from_", ""),
+            "to": h.get("to_", ""),
+            "cc": h.get("cc_", ""),
+            "date": h.get("date_", ""),
+            "body_text": b.get("body_text", ""),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc

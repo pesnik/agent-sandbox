@@ -15,7 +15,7 @@ core/                        # Single Docker image (Ubuntu 22.04)
     api.conf                 # uvicorn FastAPI :8091
     mcp.conf                 # MCP SSE server :8079
   nginx/conf.d/default.conf  # Reverse proxy routing (incl. optional sidecar upstreams)
-  api/main.py                # FastAPI routes (/v1/shell, /v1/files, /v1/browser, /v1/browser/scroll, /v1/google-messages, /v1/whatsapp)
+  api/main.py                # FastAPI routes (/v1/shell, /v1/files, /v1/browser, /v1/browser/scroll, /v1/google-messages, /v1/whatsapp, /v1/outlook)
   api/cdp.py                 # Pure CDP client (no Playwright dependency in the API); exports scroll_at()
   mcp_server/                # MCP server (FastAPI + SSE transport)
     server.py                # Slim dispatcher — imports all tools from tools/
@@ -385,6 +385,24 @@ The click endpoint accepts either a CSS selector or absolute viewport coordinate
 Implemented via `cdp.click(selector)` and `cdp.click_at(x, y)` respectively.
 Coordinates map directly to `Input.dispatchMouseEvent` — no DOM query needed.
 
+## `/v1/outlook/list` and `/v1/outlook/read` — read Outlook inbox
+
+REST endpoints for Outlook Web. Both target the **active tab** via `cdp_evaluate` — Outlook must be the focused tab (auto-navigates if already on an outlook.* URL, otherwise activate via CDP first).
+
+```json
+POST /v1/outlook/list
+{"limit": 20, "unread_only": false}
+→ {"emails": [{index, convId, unread, sender, senderEmail, subject, time, preview}], "count": N}
+
+POST /v1/outlook/read
+{"index": 1}
+→ {index, subject, from, to, cc, date, body_text}
+```
+
+**Sender parsing:** email list reads display name from first leaf span; `senderEmail` populated only when the span has a `title` with `@`. Thread count spans `(N)` are filtered out.
+
+**`from` in read:** reads first non-empty SPAN with `[role="heading"][aria-level="3"]` after the subject DIV.
+
 ## `/v1/whatsapp/read` — read WhatsApp messages
 
 Dedicated REST endpoint mirroring `/v1/google-messages/read` for WhatsApp Web.
@@ -449,6 +467,10 @@ Returns messages with `text`, `time` (absolute), `date` (tombstone day name),
 | Google Messages returns only 1 result | Page not fully loaded | `navigate_in_tab` + extra `asyncio.sleep(8)` on first open |
 | Google Messages timestamps empty | Relative timestamps shown by default | Read `mws-absolute-timestamp` elements; click messages to reveal absolute time |
 | Google Messages few messages loaded | Virtual scrolling only renders visible | Scroll `mws-bottom-anchored.container` to top repeatedly until count stabilizes |
+| Outlook `503 not logged in` | Session expired | Open VNC, sign in to Outlook |
+| Outlook `emails` list empty | Page still loading or wrong tab | Activate Outlook tab via `json/activate`, wait 3–5s, retry |
+| Outlook `from` field empty | Fixed: reads first SPAN regardless of `@` | Update to latest main.py |
+| Outlook wrong folder shown | Focused on non-inbox folder | Navigate to `https://outlook.cloud.microsoft/mail/inbox` |
 | WhatsApp `/read` returns 503 | No WhatsApp tab open | Open `https://web.whatsapp.com` in the sandbox browser |
 | WhatsApp `/read` returns 404 | Chat not in visible sidebar (virtual scroll) | Activate WA tab, scroll `#pane-side` via `/v1/browser/scroll` (x≈320,y≈434) until contact appears |
 | WhatsApp `/read` returns `count:0` after opening chat | "Syncing older messages" — history loading from phone | Wait 10–30s and retry; phone must be online with WhatsApp running |
