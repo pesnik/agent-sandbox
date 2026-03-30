@@ -237,7 +237,23 @@ curl -X POST http://localhost:8080/v1/outlook/list \
 curl -X POST http://localhost:8080/v1/outlook/read \
   -H 'Content-Type: application/json' \
   -d '{"index": 1}'
-# → {subject, from, to, cc, date, body_text}
+# → {index, subject, from, to, cc, date, body_text}
+
+# List all folders from the nav pane
+curl -X POST http://localhost:8080/v1/outlook/list-folders
+# → {"folders": [{name, level}], "count": N}
+
+# Apply or clear the Unread filter
+curl -X POST http://localhost:8080/v1/outlook/filter \
+  -H 'Content-Type: application/json' \
+  -d '{"active": true}'
+# → {"active": true, "status": "ok"}
+
+# Move an email to a named folder
+curl -X POST http://localhost:8080/v1/outlook/move \
+  -H 'Content-Type: application/json' \
+  -d '{"index": 2, "folder": "Reports"}'
+# → {"status": "moved", "index": 2, "folder": "Reports"}
 ```
 
 > Targets the active tab — Outlook must be focused. Activate via `http://localhost:9222/json/activate/<tab-id>` if needed.

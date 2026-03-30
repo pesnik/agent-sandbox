@@ -15,8 +15,15 @@ core/                        # Single Docker image (Ubuntu 22.04)
     api.conf                 # uvicorn FastAPI :8091
     mcp.conf                 # MCP SSE server :8079
   nginx/conf.d/default.conf  # Reverse proxy routing (incl. optional sidecar upstreams)
-  api/main.py                # FastAPI routes (/v1/shell, /v1/files, /v1/browser, /v1/browser/scroll, /v1/google-messages, /v1/whatsapp, /v1/outlook)
-  api/cdp.py                 # Pure CDP client (no Playwright dependency in the API); exports scroll_at()
+  api/main.py                # Slim app factory — includes routers, exposes /v1/status
+  api/cdp.py                 # Pure CDP client; exports navigate, click, evaluate, scroll_at, press_key, type_into_focused
+  api/routers/               # One module per domain (shell, files, browser, google_messages, whatsapp, outlook)
+    shell.py                 # /v1/shell/execute
+    files.py                 # /v1/files/{read,write,list,delete}
+    browser.py               # /v1/browser/{navigate,screenshot,click,scroll,type,evaluate}
+    google_messages.py       # /v1/google-messages/read
+    whatsapp.py              # /v1/whatsapp/read
+    outlook.py               # /v1/outlook/{list,read,list-folders,filter,move}
   mcp_server/                # MCP server (FastAPI + SSE transport)
     server.py                # Slim dispatcher — imports all tools from tools/
     tools/                   # One module per tool category
@@ -241,7 +248,7 @@ Nine tools for Outlook Web (`outlook.office.com`) running in the persistent brow
 
 `outlook_list_folders` reads `[role="treeitem"]` elements from Outlook's nav tree. The innerText format is `"\uXXXX\nFolderName"` (unicode icon + newline + name) — line-filtering is applied to extract the name.
 
-`outlook_move_email` strategy: (1) click "Move to" toolbar button; (2) click "Move to a different folder..." to open the full tree picker dialog; (3) use coordinate-based click (`Input.dispatchMouseEvent` via CDP) on the matching `[role="treeitem"][aria-level="2"]` — JS `.click()` doesn't trigger React/Fluent UI handlers; (4) coordinate-click the "Move" button to confirm. The folder is matched by first-line text of the treeitem's inner DIV (after unicode icon chars).
+`outlook_move_email` / `POST /v1/outlook/move` strategy: (1) JS-click "Move to" toolbar button; (2) JS-click "Move to a different folder..." to open the full tree picker dialog; (3) JS `input.focus()` on the search box, then `cdp.type_into_focused(folder)` to filter the tree; (4) `press_key("Tab")` → root header, `press_key("ArrowDown")` → target folder (enables Move button); (5) `press_key("Tab")` × 2 → Move button, `press_key("Enter")` to confirm; (6) verify dialog closed. Keyboard-only navigation is required because Fluent UI portal overlay nodes block Playwright/CDP coordinate clicks and React 18 ignores untrusted JS `dispatchEvent`.
 
 ## Google Messages MCP tools
 
@@ -463,7 +470,7 @@ Returns messages with `text`, `time` (absolute), `date` (tombstone day name),
 | `make login` blocked | Headless Chrome using same data dir | Run `make stop` first, then `make login` |
 | Outlook move picker shows icon chars only | `[role="treeitem"]` innerText is `"\uXXXX\nName"` | Filter lines: skip single chars, digits, status words; take first valid line |
 | Outlook move click intercepted | Fluent UI `fluent-default-layer-host` overlay on top | Dispatch Escape via JS first; use JS `.click()` not Playwright pointer click |
-| Outlook move: Move button stays disabled | JS `.click()` on treeitem doesn't trigger React handler | Use coordinate-based click via `Input.dispatchMouseEvent` (CDP `mousePressed`/`mouseReleased`) |
+| Outlook move: Move button stays disabled | Fluent UI portal nodes block CDP coordinate clicks; React 18 ignores untrusted JS events | Use keyboard-only nav: JS `input.focus()` → type folder → Tab → ArrowDown → Tab × 2 → Enter |
 | Google Messages returns only 1 result | Page not fully loaded | `navigate_in_tab` + extra `asyncio.sleep(8)` on first open |
 | Google Messages timestamps empty | Relative timestamps shown by default | Read `mws-absolute-timestamp` elements; click messages to reveal absolute time |
 | Google Messages few messages loaded | Virtual scrolling only renders visible | Scroll `mws-bottom-anchored.container` to top repeatedly until count stabilizes |
