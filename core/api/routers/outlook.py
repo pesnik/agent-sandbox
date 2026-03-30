@@ -46,10 +46,16 @@ _JS_LIST_EMAILS = """
         for (const s of leaves) {
             const text = (s.innerText || '').trim();
             const title = s.getAttribute('title') || '';
-            if (!time && /^\d{1,2}:\d{2}/.test(text)) { time = text; }
-            else if (!sender) { sender = text; senderEmail = title.includes('@') ? title : ''; }
-            else if (!subject) { subject = text; }
-            else if (!preview) { preview = text; }
+            if (!time && /\d{1,2}:\d{2}/.test(text)) {
+                time = text;
+            } else if (!sender) {
+                sender = text;
+                if (title.includes('@')) senderEmail = title;
+            } else if (!subject) {
+                subject = text;
+            } else if (!preview) {
+                preview = text;
+            }
         }
         return {index: idx, convId, unread, sender, senderEmail, subject, time, preview};
     });
