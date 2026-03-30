@@ -409,6 +409,68 @@ async def evaluate_in_tab(js: str, url_contains: str) -> dict[str, Any]:
         await http.close()
 
 
+_SPECIAL_KEYS: dict[str, tuple[str, str, int]] = {
+    "Tab":       ("Tab",       "Tab",       9),
+    "Enter":     ("Enter",     "Return",    13),
+    "Escape":    ("Escape",    "Escape",    27),
+    "ArrowDown": ("ArrowDown", "ArrowDown", 40),
+    "ArrowUp":   ("ArrowUp",   "ArrowUp",   38),
+    "Space":     (" ",         "Space",     32),
+}
+
+
+async def press_key(key: str) -> dict[str, Any]:
+    """Dispatch a keyDown+keyUp for a named key in the active tab.
+
+    Supports: Tab, Enter, Escape, ArrowDown, ArrowUp, Space, or any single character.
+    Focus state is preserved in the browser between calls.
+
+    Returns:
+        { "key": str, "status": "ok" }
+    """
+    http, cdp = await _open_session()
+    try:
+        key_name, code, vk = _SPECIAL_KEYS.get(key, (key, key, 0))
+        params: dict[str, Any] = {"type": "keyDown", "key": key_name, "code": code}
+        if vk:
+            params["windowsVirtualKeyCode"] = vk
+            params["nativeVirtualKeyCode"] = vk
+        await cdp.send("Input.dispatchKeyEvent", params)
+        await cdp.send("Input.dispatchKeyEvent", {**params, "type": "keyUp"})
+        return {"key": key, "status": "ok"}
+    finally:
+        await cdp.close()
+        await http.close()
+
+
+async def type_into_focused(text: str, delay_ms: int = 30) -> dict[str, Any]:
+    """Type text into whatever element currently has focus (no selector click).
+
+    Useful after focusing an element via JS (e.g., input.focus()), where a
+    synthetic mouse click would deselect or move focus.
+
+    Returns:
+        { "chars_typed": int, "status": "ok" }
+    """
+    http, cdp = await _open_session()
+    try:
+        for char in text:
+            await cdp.send(
+                "Input.dispatchKeyEvent",
+                {"type": "keyDown", "text": char, "unmodifiedText": char},
+            )
+            await cdp.send(
+                "Input.dispatchKeyEvent",
+                {"type": "keyUp", "text": char, "unmodifiedText": char},
+            )
+            if delay_ms:
+                await asyncio.sleep(delay_ms / 1000)
+        return {"chars_typed": len(text), "status": "ok"}
+    finally:
+        await cdp.close()
+        await http.close()
+
+
 async def navigate_in_tab(url: str, url_contains: str) -> dict[str, Any]:
     """Like navigate() but targets the tab whose URL contains url_contains.
     If no matching tab exists, opens in pages[0].
