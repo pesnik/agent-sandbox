@@ -15,7 +15,7 @@ core/                        # Single Docker image (Ubuntu 22.04)
     api.conf                 # uvicorn FastAPI :8091
     mcp.conf                 # MCP SSE server :8079
   nginx/conf.d/default.conf  # Reverse proxy routing (incl. optional sidecar upstreams)
-  api/main.py                # FastAPI routes (/v1/shell, /v1/files, /v1/browser, /v1/browser/scroll, /v1/google-messages)
+  api/main.py                # FastAPI routes (/v1/shell, /v1/files, /v1/browser, /v1/browser/scroll, /v1/google-messages, /v1/whatsapp)
   api/cdp.py                 # Pure CDP client (no Playwright dependency in the API); exports scroll_at()
   mcp_server/                # MCP server (FastAPI + SSE transport)
     server.py                # Slim dispatcher — imports all tools from tools/
@@ -385,6 +385,24 @@ The click endpoint accepts either a CSS selector or absolute viewport coordinate
 Implemented via `cdp.click(selector)` and `cdp.click_at(x, y)` respectively.
 Coordinates map directly to `Input.dispatchMouseEvent` — no DOM query needed.
 
+## `/v1/whatsapp/read` — read WhatsApp messages
+
+Dedicated REST endpoint mirroring `/v1/google-messages/read` for WhatsApp Web.
+Targets the `web.whatsapp.com` tab directly — does not disrupt other open tabs.
+
+```json
+POST /v1/whatsapp/read
+{"chat": "Furkan", "limit": 20}
+```
+
+Returns messages with `time`, `sender`, `text`. Requires WhatsApp Web tab open and logged in.
+
+**Sidebar virtual scroll:** WhatsApp only renders ~20–30 recent chats. If a contact isn't found, activate the WA tab then scroll `#pane-side` via `/v1/browser/scroll` (center ≈ x=320, y=434).
+
+**"Syncing older messages":** When a chat hasn't been opened recently, WhatsApp Web syncs history from the phone first. Returns `count: 0` until sync completes (~10–30s). Retry with a poll loop.
+
+**Activate WhatsApp tab before scrolling:** the scroll endpoint targets the active tab. Use `curl http://localhost:9222/json/activate/<tab-id>` to focus the WhatsApp tab first (get ID from `http://localhost:9222/json`).
+
 ## `/v1/browser/scroll` — native mouseWheel scroll
 
 Dispatches a CDP `Input.dispatchMouseEvent` of type `mouseWheel` at absolute viewport coordinates. Unlike JS `WheelEvent` dispatched via `evaluate`, this triggers the browser's native scroll handling — required to load new items in virtual-scroll lists (e.g. the Google Messages sidebar).
@@ -431,6 +449,10 @@ Returns messages with `text`, `time` (absolute), `date` (tombstone day name),
 | Google Messages returns only 1 result | Page not fully loaded | `navigate_in_tab` + extra `asyncio.sleep(8)` on first open |
 | Google Messages timestamps empty | Relative timestamps shown by default | Read `mws-absolute-timestamp` elements; click messages to reveal absolute time |
 | Google Messages few messages loaded | Virtual scrolling only renders visible | Scroll `mws-bottom-anchored.container` to top repeatedly until count stabilizes |
+| WhatsApp `/read` returns 503 | No WhatsApp tab open | Open `https://web.whatsapp.com` in the sandbox browser |
+| WhatsApp `/read` returns 404 | Chat not in visible sidebar (virtual scroll) | Activate WA tab, scroll `#pane-side` via `/v1/browser/scroll` (x≈320,y≈434) until contact appears |
+| WhatsApp `/read` returns `count:0` after opening chat | "Syncing older messages" — history loading from phone | Wait 10–30s and retry; phone must be online with WhatsApp running |
+| WhatsApp scroll targets wrong tab | Another tab (Outlook, Messages) was active | `curl http://localhost:9222/json/activate/<wa-tab-id>` first |
 | Google Messages `/read` returns 0 messages for a chat that exists | Chat is below the visible viewport in sidebar; `getBoundingClientRect()` returns off-screen y coords; `cdp_click_at` clicks outside viewport | Fixed: `_JS_FIND_CHAT` calls `el.scrollIntoView({block:'center'})` before reading rect |
 | Google Messages `/read` returns 404 for a chat that exists | Chat not yet in the DOM (virtual scrolling — sidebar only renders ~25 items) | Scroll the sidebar into the chat's vicinity first: POST `/v1/browser/scroll` with `x=170,y=430,delta_y=1500` repeatedly until the chat appears in `mws-conversation-list-item` DOM, then call `/read` |
 | `PIDS[-1]` bad array subscript | macOS ships bash 3.2 (no negative indices) | Use named variable `PID=$!` instead |

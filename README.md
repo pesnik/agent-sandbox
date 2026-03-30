@@ -224,6 +224,20 @@ curl -X POST http://localhost:8080/v1/browser/navigate \
 curl http://localhost:8080/v1/browser/screenshot  # base64 PNG
 ```
 
+### WhatsApp (dedicated endpoint)
+
+```bash
+curl -X POST http://localhost:8080/v1/whatsapp/read \
+  -H 'Content-Type: application/json' \
+  -d '{"chat": "Furkan", "limit": 20}'
+# → {"chat": "Furkan", "count": 5, "messages": [{time, sender, text}, ...]}
+```
+
+Targets the `web.whatsapp.com` tab directly. Requires WhatsApp Web open and logged in.
+
+> **If chat not found:** WhatsApp sidebar shows only recent chats. Use `/v1/browser/scroll` on `#pane-side` (activate WA tab first via `http://localhost:9222/json/activate/<id>`).
+> **If count is 0:** Chat may be syncing history from phone — wait 10–30s and retry.
+
 ### Browser scroll (native virtual-scroll trigger)
 
 ```bash
