@@ -325,6 +325,8 @@ Architecture:
 
 First-time pairing: `make whatsapp-qr` — QR code printed to container logs. Scan with WhatsApp mobile → Settings → Linked Devices → Link a Device.
 
+**QR timeout / re-scan:** WhatsApp QR codes expire in ~20 seconds. The Go bridge automatically generates a new QR when the old one expires — no restart needed. Just run `make whatsapp-qr` again to tail logs and scan the fresh code. There is no HTTP re-scan endpoint; the bridge manages pairing state internally.
+
 ### Google Messages MCP sidecar (`/gmessages/mcp/sse`)
 
 Source: `modules/gmessages-mcp/` — MaxGhenis/openmessage (OpenMessage Go binary wrapping mautrix-gmessages / libgm).
@@ -337,6 +339,14 @@ Native tools (from OpenMessage):
 - `get_messages`, `list_conversations`, `send_message`, `search_messages`, `get_status`
 
 First-time pairing: open `http://localhost:8080/gmessages/` and scan with Google Messages → profile icon → Device pairing → Pair new device.
+
+**QR timeout / re-scan:** If the QR times out (`[Client ERROR] Timeout waiting for QR code scan`), restart the sidecar — `entrypoint.sh` will re-run `openmessage pair` and show a fresh QR:
+```bash
+docker compose -f docker-compose.gmessages-mcp.yml restart
+make gmessages-logs
+```
+
+**DNS errors (`127.0.0.11:53: server misbehaving`):** Docker's internal DNS resolver occasionally fails to resolve `instantmessaging-pa.clients6.google.com`. The OpenMessage client retries with backoff (10s → 15s → 20s → ...) and recovers automatically. If errors persist for more than a few minutes, restart the sidecar.
 
 > **Note:** Google is migrating Messages for Web from QR pairing to Google Account sign-in. If pairing breaks, check https://github.com/mautrix/gmessages for protocol updates.
 
@@ -415,6 +425,9 @@ Returns messages with `text`, `time` (absolute), `date` (tombstone day name),
 | WhatsApp/Google Messages service workers offline | `--disable-background-networking` flag | Flag removed from `run-local.sh` and `login.sh` |
 | Outlook MSAL token not saved | `--disable-sync` flag | Flag removed; both login.sh and run-local.sh now use identical Chrome flags |
 | Browser session lost on stop | Chrome SIGKILL before IndexedDB flush | `run-local.sh` sends SIGTERM and waits up to 15s for graceful Chrome exit |
+| WhatsApp QR expired before scan | QR codes expire in ~20s | Bridge auto-generates a new QR — just re-run `make whatsapp-qr` |
+| Google Messages `Timeout waiting for QR code scan` | `openmessage pair` timed out | `docker compose -f docker-compose.gmessages-mcp.yml restart` then `make gmessages-logs` |
+| `127.0.0.11:53: server misbehaving` in gmessages logs | Docker DNS resolver transient failure | Client retries with backoff and recovers; restart sidecar if stuck for >2 min |
 
 ## Adding a new always-on service
 

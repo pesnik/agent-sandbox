@@ -147,6 +147,17 @@ open http://localhost:8080/gmessages/
 
 Once paired, sessions persist in named Docker volumes and survive container restarts and rebuilds indefinitely (until you unlink from the phone).
 
+**QR code expired before you could scan?**
+
+- **WhatsApp:** The Go bridge auto-generates a new QR when the old one expires. No restart needed — just run `make whatsapp-qr` again and scan the fresh code.
+- **Google Messages:** If you see `Timeout waiting for QR code scan`, restart the sidecar to trigger a fresh pairing attempt:
+  ```bash
+  docker compose -f docker-compose.gmessages-mcp.yml restart
+  make gmessages-logs
+  ```
+
+**Seeing `127.0.0.11:53: server misbehaving` in gmessages logs?** That's Docker's internal DNS resolver having a transient hiccup. The client retries automatically with increasing backoff. It self-heals in under a minute — only restart if errors persist longer than ~2 minutes.
+
 ---
 
 ## MCP endpoints
