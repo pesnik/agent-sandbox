@@ -287,4 +287,9 @@ gmessages-down:
 
 .PHONY: gmessages-logs
 gmessages-logs:
-	docker logs -f agent-gmessages-mcp
+	docker logs --tail 40 -f agent-gmessages-mcp
+
+.PHONY: gmessages-restart
+gmessages-restart:
+	docker compose -f docker-compose.yml -f docker-compose.gmessages-mcp.yml restart gmessages-mcp
+	docker logs --tail 40 -f agent-gmessages-mcp
