@@ -27,17 +27,24 @@ _JS_GM_GET_MESSAGES = """
     const result = [];
     let currentDate = '';
 
+    let currentTombstoneTime = '';
+
     for (const item of items) {
         if (item.nodeName === 'MWS-TOMBSTONE-MESSAGE-WRAPPER') {
-            const raw = (item.textContent || '').replace(/\\u00A0/g, ' ').trim();
+            const raw = (item.textContent || '')
+                .replace(/\\u00A0/g, ' ')
+                .replace(/\\u202F/g, ' ')
+                .trim();
             if (raw) {
                 const parts = raw.split('\\u00B7').map(s => s.trim());
                 const dayPart = parts[0] || '';
+                const timePart = parts[1] || '';
                 if (dayPart && !dayPart.match(/^\\d{1,2}:\\d{2}/)) {
                     currentDate = dayPart;
                 } else {
                     currentDate = 'today';
                 }
+                currentTombstoneTime = timePart;
             }
             continue;
         }
@@ -48,14 +55,19 @@ _JS_GM_GET_MESSAGES = """
 
         const absTs = item.querySelector('mws-absolute-timestamp');
         const relTs = item.querySelector('mws-relative-timestamp, .timestamp');
-        const time = absTs ? absTs.textContent.trim() : (relTs ? relTs.innerText.trim() : '');
+        const rawTime = absTs ? absTs.textContent : (relTs ? relTs.innerText : '');
+        const time = rawTime.replace(/\\u202F/g, ' ').trim();
 
         const isOutgoing = item.getAttribute('is-outgoing') === 'true';
         const senderEl = item.querySelector('.sender-name, [data-e2e-sender-name]');
         const sender = senderEl ? senderEl.innerText.trim() : (isOutgoing ? 'Me' : '');
         const msgId = item.getAttribute('msg-id') || '';
 
-        result.push({text, time, date: currentDate, is_outgoing: isOutgoing, sender, msg_id: msgId});
+        result.push({
+            text, time, date: currentDate,
+            tombstone_time: currentTombstoneTime,
+            is_outgoing: isOutgoing, sender, msg_id: msgId
+        });
     }
 
     return result.filter(m => !m.is_outgoing).slice(-limit);
