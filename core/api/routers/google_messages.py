@@ -107,29 +107,45 @@ async def google_messages_read(req: GoogleMessagesReadRequest) -> dict[str, Any]
         gm_base = f"https://{_GM_HOST}/web/conversations"
         if _GM_HOST not in current or current.rstrip("/") != gm_base.rstrip("/"):
             await cdp_navigate(gm_base)
-            await asyncio.sleep(5)
 
+        # Poll for conversation list instead of blind sleep
         safe_name = json.dumps(req.chat.lower())
-        coords = await cdp_evaluate(_JS_FIND_CHAT % safe_name)
-        pos = coords.get("result")
+        pos = None
+        for _ in range(15):
+            await asyncio.sleep(1)
+            coords = await cdp_evaluate(_JS_FIND_CHAT % safe_name)
+            pos = coords.get("result")
+            if pos:
+                break
         if not pos:
             raise HTTPException(
                 status_code=404, detail=f"Conversation '{req.chat}' not found"
             )
 
         await cdp_click_at(pos["x"], pos["y"])
-        await asyncio.sleep(2)
+        # Poll for messages to appear instead of blind sleep
+        for _ in range(10):
+            await asyncio.sleep(1)
+            check = await cdp_evaluate("document.querySelectorAll('mws-message-wrapper').length")
+            if (check.get("result") or 0) > 0:
+                break
 
         if req.limit > 25:
             max_scrolls = max(10, req.limit // 25)
             prev_count = 0
             for _ in range(max_scrolls):
-                scroll_result = await cdp_evaluate(_JS_SCROLL_UP)
-                current_count = scroll_result.get("result", 0) or 0
+                await cdp_evaluate(_JS_SCROLL_UP)
+                # Poll for new messages to load after scroll (up to 5s)
+                current_count = prev_count
+                for _ in range(5):
+                    await asyncio.sleep(1)
+                    scroll_result = await cdp_evaluate(_JS_SCROLL_UP)
+                    current_count = scroll_result.get("result", 0) or 0
+                    if current_count != prev_count:
+                        break
                 if current_count >= req.limit or current_count == prev_count:
                     break
                 prev_count = current_count
-                await asyncio.sleep(2)
 
         result = await cdp_evaluate(_JS_GM_GET_MESSAGES % req.limit)
         messages = result.get("result") or []
