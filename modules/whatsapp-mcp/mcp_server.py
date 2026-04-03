@@ -25,6 +25,8 @@ import httpx
 import uvicorn
 from mcp.server.fastmcp import FastMCP
 
+os.environ["STARLETTE_TRUSTED_HOSTS"] = "*"
+
 BRIDGE_URL = os.environ.get("WHATSAPP_BRIDGE_URL", "http://localhost:8080")
 DB_PATH    = os.environ.get("WHATSAPP_DB_PATH", "/data/messages.db")
 PORT       = int(os.environ.get("MCP_PORT", "8081"))
@@ -161,5 +163,31 @@ async def whatsapp_send_message(to: str, message: str) -> dict:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    # FastMCP >= 1.0 exposes sse_app() → Starlette app with /sse + /messages
-    uvicorn.run(mcp.sse_app(), host="0.0.0.0", port=PORT, log_level="info")
+    import sys
+    import os
+    
+    os.environ.setdefault("STARLETTE_TRUSTED_HOSTS", "*")
+    
+    print(f"Starting MCP server on port {PORT}", file=sys.stderr)
+    sys.stderr.flush()
+    
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+    
+    mcp_app = mcp.sse_app()
+    
+    async def root(request):
+        return JSONResponse({"status": "ok", "mcp": "whatsapp-mcp"})
+    
+    app = Starlette(
+        routes=[
+            Route("/", root),
+            Route("/sse", mcp_app),
+            Route("/sse/", mcp_app),
+        ]
+    )
+    
+    print(f"MCP app created, starting uvicorn on 0.0.0.0:{PORT}", file=sys.stderr)
+    sys.stderr.flush()
+    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")

@@ -201,12 +201,8 @@ server {
     # when the sidecar container is offline (returns 502 on those requests).
     # -------------------------------------------------------------------------
     location ${BASE_PATH}/whatsapp-mcp/ {
-        resolver 127.0.0.11 valid=10s ipv6=off;
-        set $wa_upstream http://whatsapp-mcp:8081;
-        proxy_pass $wa_upstream/;
+        proxy_pass http://whatsapp-mcp:8081/;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_read_timeout 3600s;
@@ -224,10 +220,6 @@ server {
         set $gm_upstream http://gmessages-mcp:7007;
         proxy_pass $gm_upstream/;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
         proxy_buffering off;
