@@ -89,6 +89,7 @@ help:
 	@echo "  make whatsapp-down     Stop WhatsApp MCP sidecar"
 	@echo "  make whatsapp-logs     Follow WhatsApp MCP logs (shows QR on first run)"
 	@echo "  make whatsapp-qr       Alias for whatsapp-logs (for QR scanning)"
+	@echo "  make whatsapp-repair   Clear session + re-pair (messages preserved)"
 	@echo "  make gmessages-up      Build + start Google Messages MCP sidecar"
 	@echo "  make gmessages-down    Stop Google Messages MCP sidecar"
 	@echo "  make gmessages-logs    Follow Google Messages MCP logs"
@@ -268,6 +269,19 @@ whatsapp-qr:
 	@echo "Ensuring WhatsApp MCP sidecar is running..."
 	docker compose -f docker-compose.yml -f docker-compose.whatsapp-mcp.yml up -d whatsapp-mcp
 	@echo "Tailing logs — scan the QR with WhatsApp → Settings → Linked Devices → Link a Device"
+	docker logs -f agent-whatsapp-mcp
+
+.PHONY: whatsapp-repare
+whatsapp-repare:
+	@echo "⚠️  This will clear the WhatsApp session (messages.db is preserved)."
+	@echo "    You will need to re-scan the QR code from WhatsApp → Linked Devices."
+	@read -p "Continue? [y/N] " ans && [ "$${ans}" = "y" ] || { echo "Aborted."; exit 1; }
+	@echo "Removing session store..."
+	docker exec agent-whatsapp-mcp rm -f /data/store/whatsapp.db
+	@echo "Restarting container..."
+	docker restart agent-whatsapp-mcp
+	@echo ""
+	@echo "Scan the QR code below with WhatsApp → Settings → Linked Devices → Link a Device"
 	docker logs -f agent-whatsapp-mcp
 
 # --- Google Messages MCP (OpenMessage / libgm) ---
