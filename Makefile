@@ -273,13 +273,21 @@ whatsapp-qr:
 
 .PHONY: whatsapp-repare
 whatsapp-repare:
-	@echo "⚠️  This will clear the WhatsApp session (messages.db is preserved)."
+	@echo "⚠️  This will clear the WhatsApp session and re-pair."
+	@echo "    Your message history (messages.db) will be backed up and restored."
 	@echo "    You will need to re-scan the QR code from WhatsApp → Linked Devices."
 	@read -p "Continue? [y/N] " ans && [ "$${ans}" = "y" ] || { echo "Aborted."; exit 1; }
+	@echo "Backing up messages.db..."
+	docker exec agent-whatsapp-mcp cp /data/store/messages.db /data/store/messages.db.bak 2>/dev/null || true
 	@echo "Removing session store..."
-	docker exec agent-whatsapp-mcp rm -f /data/store/whatsapp.db
+	docker exec agent-whatsapp-mcp rm -f /data/store/whatsapp.db /data/store/whatsapp.db-journal
 	@echo "Restarting container..."
 	docker restart agent-whatsapp-mcp
+	@echo ""
+	@echo "⏳ Waiting for bridge to initialise (10s)..."
+	@sleep 10
+	@echo "Restoring messages.db backup..."
+	docker exec agent-whatsapp-mcp sh -c 'if [ -f /data/store/messages.db.bak ]; then cp /data/store/messages.db.bak /data/store/messages.db && echo "✅ Messages restored"; else echo "⚠️  No backup found"; fi'
 	@echo ""
 	@echo "Scan the QR code below with WhatsApp → Settings → Linked Devices → Link a Device"
 	docker logs -f agent-whatsapp-mcp
