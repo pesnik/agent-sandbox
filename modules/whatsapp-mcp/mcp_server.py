@@ -7,14 +7,19 @@ Architecture:
   This server (port 8081, external) — reads SQLite for listing/search,
                                       calls Go bridge REST for sends.
 
-Schema (messages.db written by the Go bridge, from pesnik/whatsapp-mcp):
-  messages(id, chat_jid, flow, timestamp, push_name, text, media_type, has_media)
-  flow: "inbound" | "outbound"
+Schema (written by the Go bridge to /data/store/messages.db):
+  chats(jid, name, last_message_time)
+  messages(id, chat_jid, sender, content, timestamp, is_from_me,
+           media_type, filename, url, media_key, file_sha256,
+           file_enc_sha256, file_length)
+  timestamp: ISO-8601 string (e.g. "2026-04-05 05:28:16+00:00")
+  is_from_me: 0 | 1
+
+NOTE: /data/messages.db is a separate empty file created at startup.
+The actual message store is always at /data/store/messages.db.
 
 REST API (Go bridge at WHATSAPP_BRIDGE_URL):
   POST /send  {"to": "JID_OR_PHONE", "text": "..."}  → {"status": "sent"}
-
-If the schema or REST path differs in your fork, adjust the queries/endpoints below.
 """
 import os
 import sqlite3
@@ -26,7 +31,7 @@ import uvicorn
 from mcp.server.fastmcp import FastMCP
 
 BRIDGE_URL = os.environ.get("WHATSAPP_BRIDGE_URL", "http://localhost:8080")
-DB_PATH    = os.environ.get("WHATSAPP_DB_PATH", "/data/messages.db")
+DB_PATH    = os.environ.get("WHATSAPP_DB_PATH", "/data/store/messages.db")
 PORT       = int(os.environ.get("MCP_PORT", "8081"))
 
 mcp = FastMCP("whatsapp-mcp")
@@ -71,13 +76,17 @@ def whatsapp_list_chats(limit: int = 20) -> list[dict]:
         rows = conn.execute(
             """
             SELECT
-                chat_jid,
-                push_name  AS name,
-                MAX(timestamp) AS last_timestamp,
-                text       AS last_text
-            FROM messages
-            GROUP BY chat_jid
-            ORDER BY last_timestamp DESC
+                c.jid       AS chat_jid,
+                c.name      AS name,
+                c.last_message_time AS last_timestamp,
+                m.content   AS last_text
+            FROM chats c
+            LEFT JOIN messages m ON m.id = (
+                SELECT id FROM messages
+                WHERE chat_jid = c.jid
+                ORDER BY timestamp DESC LIMIT 1
+            )
+            ORDER BY c.last_message_time DESC
             LIMIT ?
             """,
             (limit,),
@@ -97,22 +106,22 @@ def whatsapp_read_chat(chat: str, limit: int = 20) -> list[dict]:
         # 1. Try exact JID match
         jid = _jid(chat)
         rows = conn.execute(
-            "SELECT flow, timestamp, push_name, text FROM messages "
-            "WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT ?",
+            "SELECT is_from_me AS flow, timestamp, sender, content AS text "
+            "FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT ?",
             (jid, limit),
         ).fetchall()
 
-        # 2. Fall back: name/push_name partial match → resolve to JID
+        # 2. Fall back: chat name partial match → resolve to JID
         if not rows:
             hit = conn.execute(
-                "SELECT chat_jid FROM messages WHERE push_name LIKE ? LIMIT 1",
+                "SELECT jid FROM chats WHERE name LIKE ? LIMIT 1",
                 (f"%{chat}%",),
             ).fetchone()
             if hit:
                 rows = conn.execute(
-                    "SELECT flow, timestamp, push_name, text FROM messages "
-                    "WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT ?",
-                    (hit["chat_jid"], limit),
+                    "SELECT is_from_me AS flow, timestamp, sender, content AS text "
+                    "FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT ?",
+                    (hit["jid"], limit),
                 ).fetchall()
 
     return _rows_to_list(rows)
@@ -127,10 +136,10 @@ def whatsapp_search_contacts(query: str) -> list[dict]:
     with _db() as conn:
         rows = conn.execute(
             """
-            SELECT DISTINCT chat_jid, push_name AS name
-            FROM messages
-            WHERE push_name LIKE ? OR chat_jid LIKE ?
-            ORDER BY push_name
+            SELECT jid AS chat_jid, name
+            FROM chats
+            WHERE name LIKE ? OR jid LIKE ?
+            ORDER BY name
             LIMIT 20
             """,
             (f"%{query}%", f"%{query}%"),

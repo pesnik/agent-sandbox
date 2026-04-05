@@ -28,7 +28,7 @@ services:
       - whatsapp-mcp-data:/data              # Go bridge SQLite DBs + session
     environment:
       - WHATSAPP_BRIDGE_URL=http://localhost:8080
-      - WHATSAPP_DB_PATH=/data/messages.db
+      - WHATSAPP_DB_PATH=/data/store/messages.db
       - MCP_PORT=8081
     restart: unless-stopped
     networks:

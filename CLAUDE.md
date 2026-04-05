@@ -319,9 +319,16 @@ Two independent MCP SSE endpoints backed by native protocol implementations — 
 Source: `modules/whatsapp-mcp/` — pesnik/whatsapp-mcp fork (whatsmeow Go bridge + FastMCP Python server).
 
 Architecture:
-1. Go bridge (`whatsapp-bridge`) connects to WhatsApp servers using the Noise + Signal Protocol, stores all messages in SQLite at `/data/messages.db`
+1. Go bridge (`whatsapp-bridge`) connects to WhatsApp servers using the Noise + Signal Protocol, stores all messages in SQLite at `/data/store/messages.db`
 2. Python MCP server reads from SQLite for list/read, calls the Go bridge REST API for sends
 3. `entrypoint.sh` starts the bridge first, polls until TCP :8080 is up, then starts the MCP server on :8081
+
+**DB path note:** `/data/messages.db` is a separate empty stub file created at container start. The actual message store is always `/data/store/messages.db`. Schema:
+```
+chats(jid, name, last_message_time)
+messages(id, chat_jid, sender, content, timestamp, is_from_me, media_type, ...)
+  timestamp: ISO-8601 string  •  is_from_me: 0|1
+```
 
 | Tool | Required args | Optional |
 |------|--------------|---------|
@@ -344,6 +351,15 @@ OpenMessage is a single binary that:
 
 Native tools (from OpenMessage):
 - `get_messages`, `list_conversations`, `send_message`, `search_messages`, `get_status`
+
+OpenMessage also exposes a plain HTTP REST API that is easier to query than MCP over SSE:
+
+```
+GET  /api/conversations                          → [{ConversationID, Name, LastMessageTS, UnreadCount, ...}]
+GET  /api/conversations/{id}/messages?limit=N    → [{Body, SenderName, SenderNumber, Timestamp, ...}]
+```
+
+`LastMessageTS` and `Timestamp` are millisecond epoch integers.
 
 First-time pairing: open `http://localhost:8080/gmessages/` and scan with Google Messages → profile icon → Device pairing → Pair new device.
 
@@ -497,6 +513,7 @@ Returns messages with `text`, `time` (absolute), `date` (tombstone day name),
 | nginx `/whatsapp-mcp/sse` returns 404 | `proxy_pass $var` doesn't strip location prefix — upstream receives `/whatsapp-mcp/sse` instead of `/sse` | Use `rewrite ^/whatsapp-mcp/(.*) /$1 break;` before `proxy_pass` |
 | nginx `/whatsapp-mcp/sse` returns 421 | FastMCP validates Host header port matches its listen port (8081); client Host (e.g. `localhost:8082`) triggers 421 | Set `proxy_set_header Host "localhost:8081";` in the whatsapp-mcp nginx block |
 | nginx sidecar SSE returns 404 with `Connection: close` | `$connection_upgrade` resolves to `close` when no Upgrade header; FastMCP rejects non-keepalive SSE connections | Use `proxy_set_header Connection "";` instead of `$connection_upgrade` for SSE proxy blocks |
+| WhatsApp MCP tools return empty results | `mcp_server.py` was querying `/data/messages.db` (always empty stub); actual store is `/data/store/messages.db` with different schema | `WHATSAPP_DB_PATH=/data/store/messages.db` — already set in compose; schema uses `content`/`is_from_me`/`sender` not `text`/`flow`/`push_name` |
 
 ## Adding a new always-on service
 
