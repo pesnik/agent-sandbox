@@ -25,7 +25,7 @@ RUN go build -o /openmessage . 2>/dev/null || \
 
 # --- Runtime ---
 FROM alpine:3.19
-RUN apk add --no-cache ca-certificates curl
+RUN apk add --no-cache ca-certificates curl sqlite
 
 COPY --from=builder /openmessage /usr/local/bin/openmessage
 

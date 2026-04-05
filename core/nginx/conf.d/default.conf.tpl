@@ -203,11 +203,17 @@ server {
     location ${BASE_PATH}/whatsapp-mcp/ {
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $wa_upstream http://whatsapp-mcp:8081;
-        proxy_pass $wa_upstream/;
+        # rewrite strips the /whatsapp-mcp/ prefix; proxy_pass with a variable
+        # does NOT perform URI rewriting itself.
+        rewrite ^${BASE_PATH}/whatsapp-mcp/(.*) /$1 break;
+        proxy_pass $wa_upstream;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host $host;
+        # "" keeps the connection alive for SSE (avoids Connection: close).
+        proxy_set_header Connection "";
+        # FastMCP validates Host header port matches its listening port (8081).
+        # Sending the client's Host (e.g. localhost:8082) causes 421.
+        proxy_set_header Host "localhost:8081";
         proxy_set_header X-Real-IP $remote_addr;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
@@ -222,10 +228,13 @@ server {
     location ${BASE_PATH}/gmessages/ {
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $gm_upstream http://gmessages-mcp:7007;
-        proxy_pass $gm_upstream/;
+        # rewrite strips the /gmessages/ prefix; proxy_pass with a variable
+        # does NOT perform URI rewriting itself.
+        rewrite ^${BASE_PATH}/gmessages/(.*) /$1 break;
+        proxy_pass $gm_upstream;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Connection "";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_read_timeout 3600s;

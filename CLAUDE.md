@@ -494,6 +494,9 @@ Returns messages with `text`, `time` (absolute), `date` (tombstone day name),
 | WhatsApp QR expired before scan | QR codes expire in ~20s | Bridge auto-generates a new QR — just re-run `make whatsapp-qr` |
 | Google Messages `Timeout waiting for QR code scan` | `openmessage pair` timed out | `docker compose -f docker-compose.gmessages-mcp.yml restart` then `make gmessages-logs` |
 | `127.0.0.11:53: server misbehaving` in gmessages logs | Docker DNS resolver transient failure | Client retries with backoff and recovers; restart sidecar if stuck for >2 min |
+| nginx `/whatsapp-mcp/sse` returns 404 | `proxy_pass $var` doesn't strip location prefix — upstream receives `/whatsapp-mcp/sse` instead of `/sse` | Use `rewrite ^/whatsapp-mcp/(.*) /$1 break;` before `proxy_pass` |
+| nginx `/whatsapp-mcp/sse` returns 421 | FastMCP validates Host header port matches its listen port (8081); client Host (e.g. `localhost:8082`) triggers 421 | Set `proxy_set_header Host "localhost:8081";` in the whatsapp-mcp nginx block |
+| nginx sidecar SSE returns 404 with `Connection: close` | `$connection_upgrade` resolves to `close` when no Upgrade header; FastMCP rejects non-keepalive SSE connections | Use `proxy_set_header Connection "";` instead of `$connection_upgrade` for SSE proxy blocks |
 
 ## Adding a new always-on service
 

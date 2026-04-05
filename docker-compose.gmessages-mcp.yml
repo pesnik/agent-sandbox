@@ -34,6 +34,7 @@ services:
     environment:
       - DATA_DIR=/data
       - PORT=7007
+      - OPENMESSAGES_HOST=0.0.0.0
     restart: unless-stopped
     networks:
       - default
