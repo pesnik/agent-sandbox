@@ -20,15 +20,28 @@ The actual message store is always at /data/store/messages.db.
 
 REST API (Go bridge at WHATSAPP_BRIDGE_URL):
   POST /send  {"to": "JID_OR_PHONE", "text": "..."}  → {"status": "sent"}
+
+REST API (this server — for polling agents like TigerClaw):
+  GET /api/chats?limit=N
+      → [{jid, name, last_message_time}]
+  GET /api/chats/{chat}/messages?limit=N&since_ms=EPOCH_MS
+      chat: JID, phone number, or partial name
+      since_ms: only return messages with timestamp > this epoch-ms value (optional)
+      → [{id, jid, name, sender, text, timestamp, ts_ms}] oldest-first
 """
 import os
 import sqlite3
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 import uvicorn
 from mcp.server.fastmcp import FastMCP
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Mount, Route
 
 BRIDGE_URL = os.environ.get("WHATSAPP_BRIDGE_URL", "http://localhost:8080")
 DB_PATH    = os.environ.get("WHATSAPP_DB_PATH", "/data/store/messages.db")
@@ -166,9 +179,94 @@ async def whatsapp_send_message(to: str, message: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# REST API — for polling agents (TigerClaw etc.) that can't use MCP SSE
+# ---------------------------------------------------------------------------
+
+def _ts_to_ms(ts: str) -> int:
+    """Convert ISO-8601 timestamp string to Unix milliseconds."""
+    try:
+        dt = datetime.fromisoformat(ts)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        return 0
+
+
+async def rest_list_chats(request: Request) -> JSONResponse:
+    """GET /api/chats?limit=N → [{jid, name, last_message_time}]"""
+    limit = int(request.query_params.get("limit", 200))
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT jid, name, last_message_time FROM chats "
+            "ORDER BY last_message_time DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return JSONResponse(_rows_to_list(rows))
+
+
+async def rest_chat_messages(request: Request) -> JSONResponse:
+    """
+    GET /api/chats/{chat}/messages?limit=N&since_ms=EPOCH_MS
+    Returns inbound messages (is_from_me=0) oldest-first.
+    """
+    chat = request.path_params["chat"]
+    limit = int(request.query_params.get("limit", 50))
+    since_ms = int(request.query_params.get("since_ms", 0))
+
+    with _db() as conn:
+        # Resolve chat → JID: try exact JID, then name partial match
+        jid = _jid(chat)
+        if not conn.execute("SELECT 1 FROM chats WHERE jid = ?", (jid,)).fetchone():
+            hit = conn.execute(
+                "SELECT jid FROM chats WHERE name LIKE ? LIMIT 1",
+                (f"%{chat}%",),
+            ).fetchone()
+            if hit:
+                jid = hit["jid"]
+
+        # Fetch name for this chat
+        _name_row = conn.execute("SELECT name FROM chats WHERE jid = ?", (jid,)).fetchone()
+        chat_name = _name_row["name"] if _name_row else chat
+
+        if since_ms > 0:
+            since_iso = datetime.fromtimestamp(since_ms / 1000, tz=timezone.utc).isoformat()
+            rows = conn.execute(
+                "SELECT id, sender, content AS text, timestamp FROM messages "
+                "WHERE chat_jid = ? AND is_from_me = 0 AND timestamp > ? "
+                "ORDER BY timestamp ASC LIMIT ?",
+                (jid, since_iso, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, sender, content AS text, timestamp FROM messages "
+                "WHERE chat_jid = ? AND is_from_me = 0 "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (jid, limit),
+            ).fetchall()
+
+    messages = []
+    for r in rows:
+        d = dict(r)
+        d["jid"] = jid
+        d["name"] = chat_name
+        d["ts_ms"] = _ts_to_ms(d.get("timestamp", ""))
+        messages.append(d)
+
+    # Always return oldest-first
+    messages.sort(key=lambda m: m["ts_ms"])
+    return JSONResponse(messages)
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    # FastMCP >= 1.0 exposes sse_app() → Starlette app with /sse + /messages
-    uvicorn.run(mcp.sse_app(), host="0.0.0.0", port=PORT, log_level="info")
+    # Compose: REST routes first, then FastMCP SSE app as fallback
+    app = Starlette(routes=[
+        Route("/api/chats", rest_list_chats),
+        Route("/api/chats/{chat:path}/messages", rest_chat_messages),
+        Mount("/", app=mcp.sse_app()),
+    ])
+    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
