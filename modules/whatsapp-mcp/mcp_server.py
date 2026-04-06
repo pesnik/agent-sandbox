@@ -230,7 +230,9 @@ async def rest_chat_messages(request: Request) -> JSONResponse:
         chat_name = _name_row["name"] if _name_row else chat
 
         if since_ms > 0:
-            since_iso = datetime.fromtimestamp(since_ms / 1000, tz=timezone.utc).isoformat()
+            # DB stores timestamps with space separator ("2026-04-06 03:11:34+00:00").
+            # isoformat() uses T — must match DB format for SQLite string comparison.
+            since_iso = datetime.fromtimestamp(since_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S+00:00")
             rows = conn.execute(
                 "SELECT id, sender, content AS text, timestamp FROM messages "
                 "WHERE chat_jid = ? AND is_from_me = 0 AND timestamp > ? "
