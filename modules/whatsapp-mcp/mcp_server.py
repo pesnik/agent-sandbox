@@ -22,6 +22,7 @@ REST API (Go bridge at WHATSAPP_BRIDGE_URL):
   POST /send  {"to": "JID_OR_PHONE", "text": "..."}  → {"status": "sent"}
 
 REST API (this server — for polling agents like TigerClaw):
+  POST /api/send  {"to": "JID_OR_PHONE", "text": "..."}  → {"status": "sent"}
   GET /api/chats?limit=N
       → [{jid, name, last_message_time}]
   GET /api/chats/{chat}/messages?limit=N&since_ms=EPOCH_MS
@@ -193,6 +194,18 @@ def _ts_to_ms(ts: str) -> int:
         return 0
 
 
+async def rest_send_message(request: Request) -> JSONResponse:
+    """POST /api/send {"to": "JID_OR_PHONE", "text": "..."} → bridge response"""
+    body = await request.json()
+    to = body.get("to", "")
+    text = body.get("text", "")
+    jid = _jid(to)
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(f"{BRIDGE_URL}/send", json={"to": jid, "text": text})
+        r.raise_for_status()
+        return JSONResponse(r.json())
+
+
 async def rest_list_chats(request: Request) -> JSONResponse:
     """GET /api/chats?limit=N → [{jid, name, last_message_time}]"""
     limit = int(request.query_params.get("limit", 200))
@@ -267,6 +280,7 @@ async def rest_chat_messages(request: Request) -> JSONResponse:
 if __name__ == "__main__":
     # Compose: REST routes first, then FastMCP SSE app as fallback
     app = Starlette(routes=[
+        Route("/api/send", rest_send_message, methods=["POST"]),
         Route("/api/chats", rest_list_chats),
         Route("/api/chats/{chat:path}/messages", rest_chat_messages),
         Mount("/", app=mcp.sse_app()),
