@@ -19,10 +19,10 @@ NOTE: /data/messages.db is a separate empty file created at startup.
 The actual message store is always at /data/store/messages.db.
 
 REST API (Go bridge at WHATSAPP_BRIDGE_URL):
-  POST /send  {"to": "JID_OR_PHONE", "text": "..."}  → {"status": "sent"}
+  POST /api/send  {"recipient": "JID_OR_PHONE", "message": "..."}  → {"success": bool, "message": "..."}
 
 REST API (this server — for polling agents like TigerClaw):
-  POST /api/send  {"to": "JID_OR_PHONE", "text": "..."}  → {"status": "sent"}
+  POST /api/send  {"recipient": "JID_OR_PHONE", "message": "..."}  → {"success": bool, "message": "..."}
   GET /api/chats?limit=N
       → [{jid, name, last_message_time}]
   GET /api/chats/{chat}/messages?limit=N&since_ms=EPOCH_MS
@@ -172,8 +172,8 @@ async def whatsapp_send_message(to: str, message: str) -> dict:
     jid = _jid(to)
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(
-            f"{BRIDGE_URL}/send",
-            json={"to": jid, "text": message},
+            f"{BRIDGE_URL}/api/send",
+            json={"recipient": jid, "message": message},
         )
         r.raise_for_status()
         return r.json()
@@ -195,13 +195,13 @@ def _ts_to_ms(ts: str) -> int:
 
 
 async def rest_send_message(request: Request) -> JSONResponse:
-    """POST /api/send {"to": "JID_OR_PHONE", "text": "..."} → bridge response"""
+    """POST /api/send {"recipient": "JID_OR_PHONE", "message": "..."} → bridge response"""
     body = await request.json()
-    to = body.get("to", "")
-    text = body.get("text", "")
-    jid = _jid(to)
+    recipient = body.get("recipient", "")
+    message = body.get("message", "")
+    jid = _jid(recipient)
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(f"{BRIDGE_URL}/send", json={"to": jid, "text": text})
+        r = await client.post(f"{BRIDGE_URL}/api/send", json={"recipient": jid, "message": message})
         r.raise_for_status()
         return JSONResponse(r.json())
 
