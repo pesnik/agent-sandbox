@@ -1,2 +1,7 @@
 __pycache__
 .venv-local
+.env
+
+# Org overlay — private scripts and vault config, never committed to public repo
+org/
+ede/

@@ -1,0 +1,26 @@
+# ---------------------------------------------------------------------------
+# Remote-server overrides — apply on top of docker-compose.yml
+#
+# Usage (remote):
+#   docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.remote.yml \
+#     -f docker-compose.whatsapp-mcp.yml \
+#     -f docker-compose.gmessages-mcp.yml up -d
+#
+# What this adds:
+#   - sandbox joins airflow_airflow-cluster-networks so it can reach Airflow
+#     services by container name (no port exposure needed)
+# ---------------------------------------------------------------------------
+
+services:
+  sandbox:
+    networks:
+      - default
+      - airflow_airflow-cluster-networks
+
+networks:
+  default:
+    name: agent-sandbox-net
+    external: true
+  airflow_airflow-cluster-networks:
+    external: true
