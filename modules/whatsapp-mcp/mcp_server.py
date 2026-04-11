@@ -22,7 +22,10 @@ REST API (Go bridge at WHATSAPP_BRIDGE_URL):
   POST /api/send  {"recipient": "JID_OR_PHONE", "message": "..."}  → {"success": bool, "message": "..."}
 
 REST API (this server — for polling agents like TigerClaw):
-  POST /api/send  {"recipient": "JID_OR_PHONE", "message": "..."}  → {"success": bool, "message": "..."}
+  POST /api/send        {"recipient": "...", "message": "..."}  → {"success": bool, "message": "..."}
+  POST /api/send-image  {"recipient": "...", "image_b64": "base64...", "caption": ""}
+                        → {"success": bool, "message": "..."}
+                        Saves image to /tmp, calls bridge /api/send with media_path, cleans up.
   GET /api/chats?limit=N
       → [{jid, name, last_message_time}]
   GET /api/chats/{chat}/messages?limit=N&since_ms=EPOCH_MS
@@ -31,8 +34,10 @@ REST API (this server — for polling agents like TigerClaw):
       → [{id, jid, name, sender, text, timestamp, ts_ms}] oldest-first
 """
 import os
+import base64
 import sqlite3
 import json
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -206,6 +211,45 @@ async def rest_send_message(request: Request) -> JSONResponse:
         return JSONResponse(r.json())
 
 
+async def rest_send_image(request: Request) -> JSONResponse:
+    """
+    POST /api/send-image
+    Body: {"recipient": "JID_OR_PHONE", "image_b64": "<base64>", "caption": "optional"}
+    Decodes the image, writes to /tmp, calls bridge /api/send with media_path, then cleans up.
+    """
+    body = await request.json()
+    recipient = body.get("recipient", "")
+    image_b64 = body.get("image_b64", "")
+    caption = body.get("caption", "")
+
+    if not recipient:
+        return JSONResponse({"success": False, "message": "recipient is required"}, status_code=400)
+    if not image_b64:
+        return JSONResponse({"success": False, "message": "image_b64 is required"}, status_code=400)
+
+    jid = _jid(recipient)
+    tmp_path = f"/tmp/wa_img_{int(time.time() * 1000)}.jpg"
+
+    try:
+        img_bytes = base64.b64decode(image_b64)
+        with open(tmp_path, "wb") as f:
+            f.write(img_bytes)
+
+        payload: dict = {"recipient": jid, "media_path": tmp_path}
+        if caption:
+            payload["message"] = caption
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(f"{BRIDGE_URL}/api/send", json=payload)
+            r.raise_for_status()
+            return JSONResponse(r.json())
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 async def rest_list_chats(request: Request) -> JSONResponse:
     """GET /api/chats?limit=N → [{jid, name, last_message_time}]"""
     limit = int(request.query_params.get("limit", 200))
@@ -281,6 +325,7 @@ if __name__ == "__main__":
     # Compose: REST routes first, then FastMCP SSE app as fallback
     app = Starlette(routes=[
         Route("/api/send", rest_send_message, methods=["POST"]),
+        Route("/api/send-image", rest_send_image, methods=["POST"]),
         Route("/api/chats", rest_list_chats),
         Route("/api/chats/{chat:path}/messages", rest_chat_messages),
         Mount("/", app=mcp.sse_app()),
